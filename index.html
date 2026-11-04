@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0a1020">
+  <meta name="description" content="Private prospect research and evidence-based email enrichment workspace.">
+  <title>Vivara Forge — Lead Workspace</title>
+  <link rel="stylesheet" href="./assets/app.css">
+  <link rel="manifest" href="./manifest.webmanifest">
+</head>
+<body>
+  <div id="loginScreen" class="login-screen">
+    <div class="login-card">
+      <div class="brand-mark">V<span>F</span></div>
+      <p class="eyebrow">PRIVATE RESEARCH WORKSPACE</p>
+      <h1>Vivara Forge</h1>
+      <p class="muted login-copy">Organize prospects, collect public evidence, and keep every lookup traceable.</p>
+      <form id="loginForm" class="stack">
+        <label>Email
+          <input id="emailInput" type="email" autocomplete="username" required placeholder="you@example.com">
+        </label>
+        <label>Password
+          <input id="passwordInput" type="password" autocomplete="current-password" required placeholder="Your password">
+        </label>
+        <button class="button primary full" type="submit">Sign in</button>
+      </form>
+      <button id="googleSignIn" class="button secondary full google-button" type="button">
+        <span class="google-g">G</span> Continue with Google
+      </button>
+      <button id="resetPassword" class="text-button" type="button">Forgot password?</button>
+      <p id="loginMessage" class="notice" role="status"></p>
+      <p class="fine-print">Sign-in only. Accounts are managed in Firebase Authentication.</p>
+    </div>
+  </div>
+
+  <div id="workspace" class="workspace hidden">
+    <aside class="sidebar">
+      <a class="brand-lockup" href="#" aria-label="Vivara Forge home">
+        <span class="brand-mark small">V<span>F</span></span>
+        <span><b>Vivara Forge</b><small>Lead workspace</small></span>
+      </a>
+      <nav class="side-nav" aria-label="Main navigation">
+        <button class="nav-item active" data-view="overview"><span>◫</span>Overview</button>
+        <button class="nav-item" data-view="prospects"><span>◎</span>Prospects <i id="leadCountBadge">0</i></button>
+        <button class="nav-item" data-view="local"><span>⌖</span>Local discovery</button>
+        <button class="nav-item" data-view="jobs"><span>◷</span>Enrichment queue</button>
+        <button class="nav-item" data-view="companion"><span>↗</span>Browser companion</button>
+        <button class="nav-item" data-view="settings"><span>⚙</span>Settings</button>
+      </nav>
+      <div class="sidebar-bottom">
+        <div class="privacy-card"><span class="privacy-dot"></span><div><b>Private workspace</b><small>Your data is scoped to your sign-in.</small></div></div>
+        <button id="signOut" class="nav-item sign-out"><span>⇥</span>Sign out</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="mobile-brand"><span class="brand-mark tiny">V<span>F</span></span><b>Vivara Forge</b></div>
+        <div class="breadcrumb"><span>WORKSPACE</span><strong id="pageTitle">Overview</strong></div>
+        <div class="topbar-right">
+          <span id="firebaseStatus" class="status-pill"><i></i>Connecting</span>
+          <button id="userMenu" class="user-chip" type="button" title="Signed-in account"><span id="userInitial">V</span><span id="userEmail">Account</span></button>
+        </div>
+      </header>
+
+      <section id="view-overview" class="view active">
+        <div class="hero">
+          <div>
+            <p class="eyebrow">EVIDENCE FIRST</p>
+            <h1>Find the contact.<br><em>Keep the proof.</em></h1>
+            <p class="hero-copy">Every result carries its source and evidence. If no public email is found, the record stays “Not found.” No guessed addresses.</p>
+            <div class="hero-actions">
+              <button class="button primary" data-goto="prospects">Import prospects <span>→</span></button>
+              <button class="button quiet" data-goto="local">Find nearby businesses</button>
+            </div>
+          </div>
+          <div class="hero-orbit" aria-hidden="true"><div class="orbit-ring"></div><div class="orbit-core">VF</div><i class="orbit-node node-a"></i><i class="orbit-node node-b"></i><i class="orbit-node node-c"></i></div>
+          <div class="hero-foot"><span><i></i>Firestore memory</span><span id="workerBadge"><i></i>Worker not connected</span></div>
+        </div>
+
+        <div class="metric-grid">
+          <article class="metric-card"><span class="metric-icon blue">◎</span><div><small>Prospects saved</small><strong id="metricProspects">0</strong></div><span class="metric-note">in your workspace</span></article>
+          <article class="metric-card"><span class="metric-icon violet">✉</span><div><small>Emails found</small><strong id="metricFound">0</strong></div><span class="metric-note">with source evidence</span></article>
+          <article class="metric-card"><span class="metric-icon amber">◷</span><div><small>Needs review</small><strong id="metricReview">0</strong></div><span class="metric-note">human decision needed</span></article>
+          <article class="metric-card"><span class="metric-icon green">✓</span><div><small>Not found</small><strong id="metricNotFound">0</strong></div><span class="metric-note">no public match returned</span></article>
+        </div>
+
+        <div class="section-heading"><div><p class="eyebrow">YOUR WORKFLOW</p><h2>Start with a list or a place</h2></div><span class="subtle">Jobs save to Firestore and can resume after you leave.</span></div>
+        <div class="workflow-grid">
+          <button class="workflow-card" data-goto="prospects"><span class="step-no">01</span><span class="workflow-symbol">⇧</span><b>Import a prospect list</b><small>CSV or JSON. Keep your original business name, city, phone, and source links.</small><span class="card-arrow">→</span></button>
+          <button class="workflow-card" data-goto="local"><span class="step-no">02</span><span class="workflow-symbol">⌖</span><b>Search nearby</b><small>Use open local business data, or open a Google Maps search without extracting its listings.</small><span class="card-arrow">→</span></button>
+          <button class="workflow-card" data-goto="jobs"><span class="step-no">03</span><span class="workflow-symbol">↻</span><b>Run enrichment</b><small>Website and PDF routes run on the worker. The browser can close after a job is queued.</small><span class="card-arrow">→</span></button>
+        </div>
+        <div class="callout"><span class="callout-icon">i</span><p><b>Source, not guesswork.</b> A domain check does not prove a mailbox exists. Candidate emails remain labeled with the page or document they came from and a review score.</p></div>
+      </section>
+
+      <section id="view-prospects" class="view">
+        <div class="page-heading">
+          <div><p class="eyebrow">YOUR DATABASE</p><h1>Prospects</h1><p class="muted">Import a list, add a lead manually, then queue selected records for lookup.</p></div>
+          <div class="heading-actions"><label class="button secondary upload-button">Import CSV / JSON<input id="fileImport" type="file" accept=".csv,.json,application/json,text/csv"></label><button id="exportLeads" class="button quiet">Export CSV</button></div>
+        </div>
+        <div class="toolbar">
+          <div class="search-box"><span>⌕</span><input id="leadSearch" type="search" placeholder="Search business, city, phone, or email"></div>
+          <select id="statusFilter" aria-label="Filter by status"><option value="">All statuses</option><option value="new">New</option><option value="queued">Queued</option><option value="running">Searching</option><option value="found">Email found</option><option value="needs_review">Needs review</option><option value="not_found">Not found</option><option value="failed">Failed</option></select>
+          <button id="queueSelected" class="button primary">Queue selected <span>→</span></button>
+        </div>
+        <div class="table-wrap">
+          <table class="lead-table">
+            <thead><tr><th><input id="selectAll" type="checkbox" aria-label="Select all"></th><th>Business</th><th>Location</th><th>Contact</th><th>Status</th><th>Evidence</th><th></th></tr></thead>
+            <tbody id="leadRows"><tr><td colspan="7" class="empty-state">Sign in to load prospects.</td></tr></tbody>
+          </table>
+        </div>
+        <div class="empty-help" id="emptyLeads"><div class="empty-illustration">◎</div><b>Your list starts here</b><p>Import CSV/JSON or add one prospect. Nothing is sent until you queue it.</p><button class="button secondary" id="showAddForm">Add a prospect</button></div>
+        <form id="addProspectForm" class="form-card hidden">
+          <div class="section-heading compact"><div><p class="eyebrow">MANUAL ENTRY</p><h2>Add a prospect</h2></div><button type="button" id="closeAddForm" class="icon-button" aria-label="Close">×</button></div>
+          <div class="form-grid">
+            <label>Business name<input name="businessName" required maxlength="160" placeholder="Example: Bayview Auto Repair"></label>
+            <label>Category<input name="category" maxlength="80" placeholder="Mechanic"></label>
+            <label>City<input name="city" maxlength="100" placeholder="Hialeah Gardens"></label>
+            <label>State<input name="state" maxlength="50" placeholder="FL"></label>
+            <label>Phone<input name="phone" maxlength="40" placeholder="(305) 555-0100"></label>
+            <label>Website<input name="website" type="url" maxlength="2048" placeholder="https://example.com"></label>
+            <label class="wide">Other public source URLs <small>One URL per line. A direct PDF URL is supported.</small><textarea name="sourceUrlsText" rows="3" maxlength="4000" placeholder="https://..."></textarea></label>
+          </div>
+          <div class="form-actions"><button type="button" id="cancelAdd" class="button quiet">Cancel</button><button class="button primary" type="submit">Save prospect</button></div>
+        </form>
+      </section>
+
+      <section id="view-local" class="view">
+        <div class="page-heading">
+          <div><p class="eyebrow">LOCAL DISCOVERY</p><h1>Find nearby businesses</h1><p class="muted">Search open local business data around your location. Results can be sparse and are saved with their source.</p></div>
+        </div>
+        <div class="local-search-card">
+          <div class="local-map-art" aria-hidden="true"><div class="map-grid"></div><div class="map-pin">⌖</div><span class="map-label label-one">LOCAL DATA</span><span class="map-label label-two">SOURCE TAGGED</span></div>
+          <div class="local-search-form">
+            <div class="form-grid">
+              <label>Business type<select id="localCategory"><option value="all">All local businesses</option><option value="mechanic">Auto repair</option><option value="contractor">Contractors and trades</option><option value="restaurant">Restaurants</option><option value="beauty">Beauty and personal care</option><option value="health">Health services</option><option value="retail">Retail shops</option></select></label>
+              <label>Search radius<select id="localRadius"><option value="2000">2 km</option><option value="5000" selected>5 km</option><option value="10000">10 km</option></select></label>
+            </div>
+            <div class="location-row"><button id="useLocation" class="button secondary">⌖ Use my location</button><span id="locationLabel" class="muted">Location is only used after you tap the button.</span></div>
+            <div class="form-actions left"><button id="runLocalSearch" class="button primary" disabled>Search open data</button><a id="openMaps" class="button quiet disabled-link" href="#" target="_blank" rel="noopener">Open Google Maps search ↗</a></div>
+            <p class="fine-print">Local results use <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>. Google Maps opens as a separate search; this tool does not copy or crawl Maps listings.</p>
+          </div>
+        </div>
+        <div id="localResults" class="local-results"></div>
+      </section>
+
+      <section id="view-jobs" class="view">
+        <div class="page-heading">
+          <div><p class="eyebrow">BACKGROUND WORK</p><h1>Enrichment queue</h1><p class="muted">Queue status is saved in Firestore. A connected worker processes it independently of this page.</p></div>
+          <span id="queueWorkerStatus" class="status-pill"><i></i>Worker not connected</span>
+        </div>
+        <div class="callout warning"><span class="callout-icon">!</span><p><b>Background work needs the Hugging Face worker.</b> Closing the page does not cancel a server-side job. If the Space sleeps or restarts, the saved queue can resume when the worker is available.</p></div>
+        <div id="jobsList" class="jobs-list"><div class="empty-help visible"><div class="empty-illustration">◷</div><b>No jobs yet</b><p>Select prospects and queue them to start.</p></div></div>
+        <div class="section-heading"><div><p class="eyebrow">ROUTE STATUS</p><h2>What can be checked</h2></div></div>
+        <div class="route-grid">
+          <article class="route-card"><span class="route-icon">↗</span><div><b>Business website</b><p>Checks the supplied site and a small number of contact/about pages.</p></div><span class="route-state ready">Backend</span></article>
+          <article class="route-card"><span class="route-icon">▧</span><div><b>Public PDF records</b><p>Downloads to memory, extracts text, then discards the PDF bytes.</p></div><span class="route-state ready">Backend</span></article>
+          <article class="route-card"><span class="route-icon">⌕</span><div><b>Public web search</b><p>Optional API route. It stays off until a search API is configured.</p></div><span class="route-state optional">Optional key</span></article>
+          <article class="route-card"><span class="route-icon">⌖</span><div><b>Local open data</b><p>Nearby discovery is available in Local Discovery with attribution.</p></div><span class="route-state open">Open data</span></article>
+        </div>
+      </section>
+
+      <section id="view-companion" class="view">
+        <div class="page-heading"><div><p class="eyebrow">DESKTOP HELPER</p><h1>Browser companion</h1><p class="muted">A private unpacked Chrome extension for capturing a public business page you open yourself.</p></div></div>
+        <div class="companion-layout">
+          <article class="form-card install-card"><span class="large-symbol">⌘</span><p class="eyebrow">LOCAL INSTALL · DESKTOP CHROME</p><h2>Capture one page at a time</h2><p>The companion can extract visible contact details from a public business website after you click Capture. It exports a JSON file you can import here.</p><ol><li>Download or clone this GitHub repository on your computer.</li><li>Open <b>chrome://extensions</b> and turn on Developer mode.</li><li>Select <b>Load unpacked</b> and choose the <code>extension</code> folder.</li><li>Open a public business website and click the extension to review/export the capture.</li></ol><div class="form-actions left"><a class="button secondary" href="https://github.com/fugthmanagement/fugthchat-Vivara-Forge/tree/main/extension" target="_blank" rel="noopener">Open extension files ↗</a><button id="extensionImportTrigger" class="button quiet" type="button">Import capture JSON</button></div></article>
+          <article class="form-card terms-card"><span class="large-symbol blue-symbol">⌖</span><p class="eyebrow">MAPS SEARCH</p><h2>Google Maps opens; its listings stay there</h2><p>Google’s terms prohibit scraping and copying Maps business listings into another database. The companion will block extraction on Maps pages. Use the local open-data route here, or a properly licensed API for other data.</p><button class="button quiet" data-goto="local">Go to Local Discovery →</button></article>
+        </div>
+        <div class="callout"><span class="callout-icon">i</span><p>On iPhone and Android, use the web workspace. The unpacked Chrome extension is for desktop Chrome only.</p></div>
+      </section>
+
+      <section id="view-settings" class="view">
+        <div class="page-heading"><div><p class="eyebrow">CONNECTIONS</p><h1>Settings</h1><p class="muted">The browser app uses Firebase for sign-in and stored prospect data.</p></div></div>
+        <div class="settings-grid">
+          <article class="form-card">
+            <p class="eyebrow">BACKGROUND WORKER</p><h2>Hugging Face endpoint</h2><p class="muted">Paste the base URL after the separate Docker Space is deployed. Never paste a token or service-account key here.</p>
+            <label>Worker URL<input id="backendUrl" type="url" placeholder="https://your-space.hf.space"></label>
+            <div class="form-actions left"><button id="saveBackend" class="button primary">Save endpoint</button><button id="checkBackend" class="button quiet">Check status</button></div>
+            <p id="backendMessage" class="notice" role="status"></p>
+          </article>
+          <article class="form-card">
+            <p class="eyebrow">FIREBASE MEMORY</p><h2>Project connection</h2><div class="connection-row"><span class="connection-dot" id="connectionDot"></span><div><b id="connectionText">Waiting for sign-in</b><small>Project: vivara-forge · Firestore</small></div></div>
+            <p class="muted">Firestore Rules are included in the repository. Deploy them only after reviewing the schema and confirming your Auth sign-in provider.</p>
+            <a class="inline-link" href="https://console.firebase.google.com/project/vivara-forge/firestore" target="_blank" rel="noopener">Open Firestore console ↗</a>
+          </article>
+          <article class="form-card full-span">
+            <p class="eyebrow">DATA HANDLING</p><h2>Raw documents are temporary</h2><p class="muted">The worker parses fetched PDFs in memory, keeps the source URL and relevant text evidence, and discards the PDF bytes. Candidate emails are never generated from guessed name patterns. An email found in a filing is labeled as a filing contact and requires review.</p>
+          </article>
+        </div>
+      </section>
+
+      <footer class="footer"><span>Vivara Forge · Evidence-based prospect research</span><span>GitHub Pages · Firebase-backed</span></footer>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <input id="extensionImport" type="file" accept=".json,application/json" hidden>
+  <script type="module" src="./assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,96 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedInAs(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    function validProspect(data) {
+      return data.keys().hasOnly([
+          'businessName', 'category', 'city', 'state', 'phone', 'website',
+          'sourceUrlsText', 'notes', 'status', 'createdAt', 'updatedAt',
+          'manualEmail', 'manualEvidenceText', 'manualSourceUrl', 'lastLookupNote'
+        ])
+        && data.businessName is string
+        && data.businessName.size() > 0
+        && data.businessName.size() <= 160
+        && (!('category' in data) || (data.category is string && data.category.size() <= 80))
+        && (!('city' in data) || (data.city is string && data.city.size() <= 100))
+        && (!('state' in data) || (data.state is string && data.state.size() <= 50))
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 40))
+        && (!('website' in data) || (data.website is string && data.website.size() <= 2048))
+        && (!('sourceUrlsText' in data) || (data.sourceUrlsText is string && data.sourceUrlsText.size() <= 4000))
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 500))
+        && (!('manualEmail' in data) || (data.manualEmail is string && data.manualEmail.size() <= 254))
+        && (!('manualEvidenceText' in data) || (data.manualEvidenceText is string && data.manualEvidenceText.size() <= 500))
+        && (!('manualSourceUrl' in data) || (data.manualSourceUrl is string && data.manualSourceUrl.size() <= 2048))
+        && (!('lastLookupNote' in data) || (data.lastLookupNote is string && data.lastLookupNote.size() <= 500));
+    }
+
+    match /users/{uid}/prospects/{prospectId} {
+      allow read, delete: if signedInAs(uid);
+      allow create: if signedInAs(uid)
+        && validProspect(request.resource.data)
+        && request.resource.data.status == 'new'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update: if signedInAs(uid)
+        && validProspect(request.resource.data)
+        && request.resource.data.createdAt == resource.data.createdAt
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.status == 'queued';
+    }
+
+    match /users/{uid}/jobs/{jobId} {
+      allow read: if signedInAs(uid);
+      allow create: if signedInAs(uid)
+        && request.resource.data.keys().hasOnly([
+          'status', 'requestedCount', 'prospectIds', 'progress', 'progressPercent', 'createdAt', 'updatedAt'
+        ])
+        && request.resource.data.status == 'queued'
+        && request.resource.data.requestedCount is int
+        && request.resource.data.requestedCount > 0
+        && request.resource.data.requestedCount <= 400
+        && request.resource.data.prospectIds is list
+        && request.resource.data.prospectIds.size() == request.resource.data.requestedCount
+        && request.resource.data.progress == 0
+        && request.resource.data.progressPercent == 0
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+      allow update, delete: if false;
+    }
+
+    // Candidate evidence is written by the authenticated worker using the Admin SDK.
+    match /users/{uid}/candidates/{candidateId} {
+      allow read: if signedInAs(uid);
+      allow write: if false;
+    }
+
+    match /users/{uid}/feedback/{feedbackId} {
+      allow read: if signedInAs(uid);
+      allow create: if signedInAs(uid)
+        && request.resource.data.keys().hasOnly([
+          'candidateId', 'prospectId', 'email', 'sourceRoute', 'businessName', 'label', 'rating', 'note', 'createdAt'
+        ])
+        && request.resource.data.candidateId is string
+        && request.resource.data.prospectId is string
+        && request.resource.data.email is string
+        && request.resource.data.sourceRoute is string
+        && request.resource.data.sourceRoute.size() <= 80
+        && request.resource.data.businessName is string
+        && request.resource.data.businessName.size() <= 160
+        && request.resource.data.label in ['correct', 'wrong', 'stale']
+        && request.resource.data.rating is int
+        && request.resource.data.rating >= 1
+        && request.resource.data.rating <= 10
+        && request.resource.data.note is string
+        && request.resource.data.note.size() <= 500
+        && request.resource.data.createdAt == request.time;
+      allow update, delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

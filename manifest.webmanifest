@@ -1,0 +1,9 @@
+{
+  "name": "Vivara Forge Lead Workspace",
+  "short_name": "Vivara Forge",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#f5f7fb",
+  "theme_color": "#0a1020",
+  "description": "Private prospect research and evidence-based email enrichment workspace."
+}

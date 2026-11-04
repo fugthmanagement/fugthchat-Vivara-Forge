@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Vivara Forge Page Capture",
+  "version": "1.0.0",
+  "description": "Capture visible business contact details from a page you open and review yourself.",
+  "permissions": ["activeTab", "scripting"],
+  "action": {
+    "default_title": "Capture business page",
+    "default_popup": "popup.html"
+  }
+}

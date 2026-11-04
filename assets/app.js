@@ -1,6 +1,6 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js";
 import {
-  getAuth, onAuthStateChanged, signInWithEmailAndPassword, GoogleAuthProvider,
+  getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, GoogleAuthProvider,
   signInWithPopup, signInWithRedirect, getRedirectResult, sendPasswordResetEmail,
   signOut, setPersistence, browserLocalPersistence
 } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-auth.js";
@@ -35,6 +35,7 @@ let stopJobs = null;
 let localItems = [];
 let currentLocation = null;
 let toastTimer = null;
+let authMode = "signin";
 
 const labels = {
   new: "New", queued: "Queued", running: "Searching", found: "Email found",
@@ -62,6 +63,10 @@ function friendlyError(error) {
   if (code.includes("auth/unauthorized-domain")) return "Add this GitHub Pages domain under Firebase Authentication → Settings → Authorized domains.";
   if (code.includes("auth/operation-not-allowed")) return "Enable this sign-in provider in Firebase Authentication → Sign-in method.";
   if (code.includes("auth/invalid-credential") || code.includes("auth/wrong-password") || code.includes("auth/user-not-found")) return "Email or password was not accepted.";
+  if (code.includes("auth/email-already-in-use")) return "An account already uses that email. Sign in or reset the password instead.";
+  if (code.includes("auth/invalid-email")) return "Enter a valid email address.";
+  if (code.includes("auth/weak-password")) return "Choose a stronger password with at least 6 characters.";
+  if (code.includes("auth/too-many-requests")) return "Too many attempts. Wait a little and try again.";
   if (code.includes("permission-denied")) return "Firestore denied this action. Deploy the repository's Firestore Rules, then refresh.";
   if (code.includes("unavailable")) return "Firebase is temporarily unavailable. Try again in a moment.";
   return error?.message || "Something went wrong.";
@@ -89,6 +94,8 @@ function beginWorkspace(user) {
   $("#workspace").classList.remove("hidden");
   $("#userEmail").textContent = user.email || "Signed in";
   $("#userInitial").textContent = (user.displayName || user.email || "V").trim().charAt(0).toUpperCase();
+  $("#adminUid").value = user.uid;
+  $("#copyAdminUid").disabled = false;
   setConnection(true, "Signed in and connected");
   stopListeners();
 
@@ -122,19 +129,44 @@ function endWorkspace() {
   jobRows = [];
   $("#workspace").classList.add("hidden");
   $("#loginScreen").classList.remove("hidden");
+  $("#adminUid").value = "";
+  $("#copyAdminUid").disabled = true;
+  setAuthMode("signin");
   setConnection(false);
 }
 
-async function signInEmail(event) {
+function setAuthMode(mode) {
+  authMode = mode;
+  const creating = mode === "signup";
+  $("#authSubmit").textContent = creating ? "Create account" : "Sign in";
+  $("#authModeToggle").textContent = creating ? "Already have an account? Sign in" : "New here? Create account";
+  $("#confirmPasswordField").classList.toggle("hidden", !creating);
+  $("#confirmPasswordInput").required = creating;
+  $("#passwordInput").autocomplete = creating ? "new-password" : "current-password";
+  $("#resetPassword").classList.toggle("hidden", creating);
+  setLoginMessage("");
+}
+
+async function submitEmailAuth(event) {
   event.preventDefault();
   const email = $("#emailInput").value.trim();
   const password = $("#passwordInput").value;
-  setLoginMessage("Signing in…", false);
+  const creating = authMode === "signup";
+  if (creating && password !== $("#confirmPasswordInput").value) {
+    setLoginMessage("The passwords do not match.");
+    return;
+  }
+  const submitButton = $("#authSubmit");
+  submitButton.disabled = true;
+  setLoginMessage(creating ? "Creating your account…" : "Signing in…", false);
   try {
-    await signInWithEmailAndPassword(auth, email, password);
+    if (creating) await createUserWithEmailAndPassword(auth, email, password);
+    else await signInWithEmailAndPassword(auth, email, password);
     setLoginMessage("");
   } catch (error) {
     setLoginMessage(friendlyError(error));
+  } finally {
+    submitButton.disabled = false;
   }
 }
 
@@ -590,7 +622,8 @@ function buildMobileNav() {
 }
 
 function initEvents() {
-  $("#loginForm").addEventListener("submit", signInEmail);
+  $("#loginForm").addEventListener("submit", submitEmailAuth);
+  $("#authModeToggle").addEventListener("click", () => setAuthMode(authMode === "signin" ? "signup" : "signin"));
   $("#googleSignIn").addEventListener("click", signInGoogle);
   $("#resetPassword").addEventListener("click", resetPassword);
   $("#signOut").addEventListener("click", () => signOut(auth).catch((error) => showToast(friendlyError(error), true)));
@@ -648,6 +681,16 @@ function initEvents() {
     showToast(value ? "Worker URL saved." : "Worker URL cleared.");
   });
   $("#checkBackend").addEventListener("click", checkBackend);
+  $("#copyAdminUid").addEventListener("click", async () => {
+    if (!currentUser?.uid) return;
+    try {
+      await navigator.clipboard.writeText(currentUser.uid);
+      showToast("Account UID copied. Paste it into the worker's ADMIN_UID setting.");
+    } catch {
+      $("#adminUid").select();
+      showToast("Select and copy this UID, then paste it into the worker's ADMIN_UID setting.");
+    }
+  });
   $("#userMenu").addEventListener("click", () => gotoView("settings"));
 }
 

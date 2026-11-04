@@ -1,10 +1,10 @@
 # Vivara Forge Lead Workspace
 
-Private, mobile-friendly prospect workspace for importing leads, collecting public contact evidence, and running resumable enrichment jobs. GitHub Pages serves the web interface; Firebase Authentication and Firestore provide sign-in and durable records; a separate Hugging Face Docker Space runs public-source lookups. The desktop Chrome companion captures one public business webpage only after the user clicks it.
+Account-scoped, mobile-friendly prospect workspace for importing leads, collecting public contact evidence, and running resumable enrichment jobs. GitHub Pages serves the web interface; Firebase Authentication and Firestore provide sign-in and durable records; a separate Hugging Face Docker Space runs public-source lookups. The desktop Chrome companion captures one public business webpage only after the user clicks it.
 
 ## What it does
 
-- Email/password and Google sign-in; there is no public sign-up form.
+- Email/password sign-in and public account creation, plus Google sign-in. Each account sees only its own Firestore records.
 - Imports prospect CSV or JSON, deduplicates the current list, and exports results to CSV.
 - Saves prospects, evidence candidates, ratings, and queue state in Firestore.
 - Queues batches up to 400 records. The worker processes the saved queue after the page closes and resumes queued/running jobs after worker restart.
@@ -24,11 +24,11 @@ The frontend config contains the Firebase **web** configuration from the Firebas
 
 ## 2. Firebase Authentication and Firestore
 
-The web app uses project `vivara-forge`, email/password sign-in, Google sign-in, and the default Firestore database. In Firebase Console:
+The web app uses project `vivara-forge`, email/password account creation and sign-in, Google sign-in, and the default Firestore database. In Firebase Console:
 
 1. In **Authentication → Sign-in method**, enable Email/Password and Google if you plan to use both.
 2. In **Authentication → Settings → Authorized domains**, add `fugthmanagement.github.io`. For local testing, add `localhost`.
-3. Create the private admin account in Authentication → Users; the app does not allow people to create accounts from the sign-in screen.
+3. Open the deployed app and choose **New here? Create account**, or use Google sign-in (which creates a Firebase account on first use). After signing in, open **Settings** and copy the account UID for the worker configuration below.
 4. Review `firestore.rules`, then deploy it using the Firebase CLI from this repository:
 
    ```sh
@@ -38,7 +38,7 @@ The web app uses project `vivara-forge`, email/password sign-in, Google sign-in,
    firebase deploy --only firestore:rules
    ```
 
-The rules let a signed-in user access only their own prospect, job, and feedback paths. Candidate evidence is read-only to the browser and written by the server worker. Review these prototype rules before sharing the app or adding additional users.
+The rules let a signed-in user access only their own prospect, job, and feedback paths. Candidate evidence is read-only to the browser and written by the server worker. The worker only accepts the UID configured as `ADMIN_UID`; other accounts cannot read your records or use your enrichment worker.
 
 Firestore can store the small JSON prospect/evidence records without requiring a Cloud Functions deployment. Storage usage and request quotas still apply; this design does not depend on Cloud Storage or Cloud Functions.
 
@@ -47,7 +47,7 @@ Firestore can store the small JSON prospect/evidence records without requiring a
 Create a **new Docker Space** for this project. Upload the contents of `hf-space/`; do not replace an existing AI Space. Hugging Face's current docs say creating a compute-based Docker Space on a personal account may require a paid plan, even though CPU Basic hardware itself has no hourly charge. Check what your account offers before creating it. If the account blocks new compute Spaces, this bundle is ready but the worker will not be live until it is deployed to an available backend. Add these Space variables/secrets in the Space settings:
 
 - Secret `FIREBASE_SERVICE_ACCOUNT_JSON`: the full JSON contents of a service-account key created for the Firebase project. Keep it out of GitHub and do not paste it in the browser.
-- Variable `ADMIN_UID`: the Firebase Authentication UID for the private administrator account.
+- Variable `ADMIN_UID`: the Firebase Authentication UID copied from Settings in the web app. The worker rejects requests from any other account.
 - Variable `ALLOWED_ORIGINS`: `https://fugthmanagement.github.io` (optionally add `http://localhost:8000` during local testing).
 - Optional secret `BRAVE_SEARCH_API_KEY`: enables the external web-search route. Without it, the worker checks supplied URLs only.
 - Optional variable `OVERPASS_URL`: an alternate OpenStreetMap Overpass API endpoint.
@@ -56,7 +56,7 @@ The worker verifies Firebase ID tokens and rejects every UID except `ADMIN_UID`.
 
 ### Background-job behavior
 
-Jobs are recorded in Firestore before the browser asks the worker to start. The worker runs the job independently of the mobile page and polls Firestore to resume queued or interrupted work when it starts. CPU Basic Spaces sleep after 48 hours of inactivity; free hardware is not an always-on guarantee. Work resumes after the worker wakes. Choose an always-on worker plan if uninterrupted processing is required.
+Jobs are recorded in Firestore before the browser asks the worker to start. Once the worker accepts a job, it runs independently of the browser page; closing Safari, Chrome, or the tab does not cancel it. The worker also polls Firestore to resume queued or interrupted work after it restarts. CPU Basic Spaces sleep after 48 hours of inactivity; a sleeping Space cannot make progress until it wakes, but the saved job remains in Firestore and resumes when the worker starts again. Choose an always-on worker plan if uninterrupted processing is required.
 
 ## 4. Sources and quality controls
 

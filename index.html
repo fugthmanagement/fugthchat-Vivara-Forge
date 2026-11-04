@@ -15,7 +15,7 @@
       <div class="brand-mark">V<span>F</span></div>
       <p class="eyebrow">PRIVATE RESEARCH WORKSPACE</p>
       <h1>Vivara Forge</h1>
-      <p class="muted login-copy">Organize prospects, collect public evidence, and keep every lookup traceable.</p>
+      <p class="muted login-copy">Sign in or create your account to organize prospects, collect public evidence, and keep every lookup traceable.</p>
       <form id="loginForm" class="stack">
         <label>Email
           <input id="emailInput" type="email" autocomplete="username" required placeholder="you@example.com">
@@ -23,14 +23,18 @@
         <label>Password
           <input id="passwordInput" type="password" autocomplete="current-password" required placeholder="Your password">
         </label>
-        <button class="button primary full" type="submit">Sign in</button>
+        <label id="confirmPasswordField" class="hidden">Confirm password
+          <input id="confirmPasswordInput" type="password" autocomplete="new-password" placeholder="Enter your password again">
+        </label>
+        <button id="authSubmit" class="button primary full" type="submit">Sign in</button>
       </form>
+      <button id="authModeToggle" class="text-button" type="button">New here? Create account</button>
       <button id="googleSignIn" class="button secondary full google-button" type="button">
         <span class="google-g">G</span> Continue with Google
       </button>
       <button id="resetPassword" class="text-button" type="button">Forgot password?</button>
       <p id="loginMessage" class="notice" role="status"></p>
-      <p class="fine-print">Sign-in only. Accounts are managed in Firebase Authentication.</p>
+      <p class="fine-print">Your prospects are private to your account. The background lookup worker only processes the administrator account configured in its settings.</p>
     </div>
   </div>
 
@@ -183,6 +187,9 @@
           </article>
           <article class="form-card">
             <p class="eyebrow">FIREBASE MEMORY</p><h2>Project connection</h2><div class="connection-row"><span class="connection-dot" id="connectionDot"></span><div><b id="connectionText">Waiting for sign-in</b><small>Project: vivara-forge · Firestore</small></div></div>
+            <label class="uid-label">Signed-in account UID<input id="adminUid" type="text" readonly aria-label="Signed-in account UID" placeholder="Sign in to show your UID"></label>
+            <div class="form-actions left"><button id="copyAdminUid" class="button secondary" type="button" disabled>Copy UID for worker</button></div>
+            <p class="fine-print">Set this value as <code>ADMIN_UID</code> in the Hugging Face Space settings. Only this account can start background lookups.</p>
             <p class="muted">Firestore Rules are included in the repository. Deploy them only after reviewing the schema and confirming your Auth sign-in provider.</p>
             <a class="inline-link" href="https://console.firebase.google.com/project/vivara-forge/firestore" target="_blank" rel="noopener">Open Firestore console ↗</a>
           </article>

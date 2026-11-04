@@ -44,7 +44,7 @@ Firestore can store the small JSON prospect/evidence records without requiring a
 
 ## 3. Hugging Face worker
 
-Create a **new Docker Space** for this project. Upload the contents of `hf-space/`; do not replace an existing AI Space. Add these Space variables/secrets in the Space settings:
+Create a **new Docker Space** for this project. Upload the contents of `hf-space/`; do not replace an existing AI Space. Hugging Face's current docs say creating a compute-based Docker Space on a personal account may require a paid plan, even though CPU Basic hardware itself has no hourly charge. Check what your account offers before creating it. If the account blocks new compute Spaces, this bundle is ready but the worker will not be live until it is deployed to an available backend. Add these Space variables/secrets in the Space settings:
 
 - Secret `FIREBASE_SERVICE_ACCOUNT_JSON`: the full JSON contents of a service-account key created for the Firebase project. Keep it out of GitHub and do not paste it in the browser.
 - Variable `ADMIN_UID`: the Firebase Authentication UID for the private administrator account.
@@ -56,7 +56,7 @@ The worker verifies Firebase ID tokens and rejects every UID except `ADMIN_UID`.
 
 ### Background-job behavior
 
-Jobs are recorded in Firestore before the browser asks the worker to start. The worker runs the job independently of the mobile page and polls Firestore to resume queued or interrupted work when it starts. Hugging Face Spaces may sleep or restart under their free/basic hardware policy, so a free Space cannot promise continuous always-on execution; work resumes after the worker wakes. Choose an always-on worker plan if uninterrupted processing is required.
+Jobs are recorded in Firestore before the browser asks the worker to start. The worker runs the job independently of the mobile page and polls Firestore to resume queued or interrupted work when it starts. CPU Basic Spaces sleep after 48 hours of inactivity; free hardware is not an always-on guarantee. Work resumes after the worker wakes. Choose an always-on worker plan if uninterrupted processing is required.
 
 ## 4. Sources and quality controls
 

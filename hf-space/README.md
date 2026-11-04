@@ -28,9 +28,9 @@ The service-account private key is powerful. Restrict access to the Space and ro
 
 ## Deploy
 
-Create a **new** Docker Space for this worker, then upload the files in this folder (`README.md`, `Dockerfile`, `requirements.txt`, `app.py`, `enrichment.py`). Do not replace an existing model or AI Space. After it builds, copy the Space URL into the web app's Settings and use **Check status**.
+Create a **new** Docker Space for this worker, then upload the files in this folder (`README.md`, `Dockerfile`, `requirements.txt`, `app.py`, `enrichment.py`). Do not replace an existing model or AI Space. Hugging Face's current docs say creating compute-based Docker Spaces on a personal account may require a paid plan, even though CPU Basic hardware itself has no hourly charge. Confirm the plan prompt before proceeding. After it builds, copy the Space URL into the web app's Settings and use **Check status**.
 
-The worker verifies Firebase ID tokens and checks `ADMIN_UID`. Firestore's client Rules do not protect Admin SDK writes, so the worker authorization check is mandatory.
+The worker verifies Firebase ID tokens and checks `ADMIN_UID`. Firestore's client Rules do not protect Admin SDK writes, so the worker authorization check is mandatory. CPU Basic Spaces sleep after 48 hours of inactivity, so queued work resumes after the worker wakes; uninterrupted processing requires always-on compute.
 
 ## Runtime behavior
 
@@ -42,4 +42,4 @@ The worker verifies Firebase ID tokens and checks `ADMIN_UID`. Firestore's clien
 - MX lookup means the domain advertises mail exchange records; it does not verify that a mailbox exists or accepts mail.
 - Request caps and timeouts are deliberately small for a personal research tool. Respect each source's terms and robots policy.
 
-Hugging Face Spaces can sleep or restart based on the Space's hardware/plan. A Firestore queue can resume when the worker starts again, but always-on processing requires an always-on worker plan or another continuously running service. A closed phone browser alone does not stop a running server job.
+Hugging Face Spaces can sleep or restart based on the Space's hardware/plan. A Firestore queue can resume when the worker starts again. A closed phone browser alone does not stop a running server job.

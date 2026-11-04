@@ -16,6 +16,11 @@ from pypdf import PdfReader
 
 USER_AGENT = "VivaraForgeResearch/1.0"
 EMAIL_RE = re.compile(r"(?<![\w.+-])[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+", re.I)
+PHONE_RE = re.compile(r"(?<![A-Za-z0-9])(?:\+\d{1,3}[\s().-]*(?:\d[\s().-]*){7,12}|(?:\+?1[\s().-]*)?(?:\(\s*\d{3}\s*\)|\d{3})[\s.-]*\d{3}[\s.-]*\d{4})(?:\s*(?:ext\.?|x)\s*\d{1,6})?(?!\d)", re.I)
+PERSON_ROLE = r"registered\s+agent|authorized\s+person(?:\(s\))?|managing\s+member|co[- ]?founder|chief\s+executive\s+officer|owner|founder|president|CEO|organizer|manager|member|director|officer"
+PERSON_NAME = r"[A-Z][A-Za-z'’.-]{1,40}(?:\s+(?:[A-Z][A-Za-z'’.-]{1,40}|[A-Z]\.)){1,3}"
+ROLE_FIRST_RE = re.compile(rf"(?P<role>{PERSON_ROLE})\s*(?:name\s*)?(?::|[-–]|\bis\b)?\s*(?P<name>{PERSON_NAME})", re.I)
+ROLE_LAST_RE = re.compile(rf"(?P<name>{PERSON_NAME})\s*[,|—–-]\s*(?P<role>{PERSON_ROLE})\b", re.I)
 MAX_BYTES = 2_500_000
 MAX_TEXT_CHARS = 500_000
 TIMEOUT = httpx.Timeout(12.0, connect=5.0)
@@ -47,6 +52,124 @@ def _jsonld_objects(value: object) -> list[dict]:
     if graph is not None:
         found.extend(_jsonld_objects(graph))
     return found
+
+
+def _phone_record(value: str, source_url: str, source_route: str, evidence: str = "") -> dict | None:
+    raw = re.sub(r"\s+", " ", value).strip(" \t,;|.")[:80]
+    if not raw:
+        return None
+    extension_match = re.search(r"(?:ext\.?|x)\s*(\d{1,6})$", raw, re.I)
+    extension = extension_match.group(1) if extension_match else ""
+    base = re.sub(r"(?:ext\.?|x)\s*\d{1,6}$", "", raw, flags=re.I).strip()
+    digits = re.sub(r"\D", "", base)
+    e164 = ""
+    formatted = raw
+    if base.lstrip().startswith("+") and 8 <= len(digits) <= 15:
+        e164 = "+" + digits
+    elif len(digits) == 10 and digits[0] in "23456789" and digits[3] in "23456789":
+        e164 = "+1" + digits
+    elif len(digits) == 11 and digits.startswith("1") and digits[1] in "23456789" and digits[4] in "23456789":
+        e164 = "+" + digits
+    if e164.startswith("+1") and len(re.sub(r"\D", "", e164)) == 11:
+        national = re.sub(r"\D", "", e164)[1:]
+        formatted = f"({national[:3]}) {national[3:6]}-{national[6:]}"
+        if extension:
+            formatted += f" ext. {extension}"
+    elif e164 and extension:
+        formatted += f" ext. {extension}"
+    context = evidence[:300]
+    phone_kind = "fax" if re.search(r"\bfax\b|facsimile", context, re.I) else "public_source_number"
+    return {
+        "raw": raw,
+        "formatted": formatted[:80],
+        "e164": e164,
+        "extension": extension,
+        "kind": phone_kind,
+        "sourceRoute": source_route,
+        "sourceUrl": source_url[:2048],
+        "evidenceText": context,
+        "requiresReview": True,
+    }
+
+
+def _public_contact_data(text: str, source_url: str, source_route: str, business_name: str = "") -> dict:
+    """Extract only public numbers and names attached to an explicit business role."""
+    if source_route == "optional_web_search" and business_name and business_name.casefold() not in text.casefold():
+        return {"businessPhones": [], "publicContacts": []}
+    phones = []
+    seen_phones = set()
+    for match in PHONE_RE.finditer(text[:MAX_TEXT_CHARS]):
+        evidence = re.sub(r"\s+", " ", text[max(0, match.start() - 70):min(len(text), match.end() + 70)]).strip()
+        item = _phone_record(match.group(0), source_url, source_route, evidence)
+        if not item:
+            continue
+        key = item["e164"] or re.sub(r"\D", "", item["raw"])
+        if key and key not in seen_phones:
+            seen_phones.add(key)
+            phones.append(item)
+        if len(phones) >= 20:
+            break
+
+    contacts = []
+    seen_people = set()
+    excluded_names = {"the owner", "business owner", "company owner", "company name", "business name", "the founder", "contact us", "learn more"}
+    for pattern in (ROLE_FIRST_RE, ROLE_LAST_RE):
+        for match in pattern.finditer(text[:MAX_TEXT_CHARS]):
+            name = re.sub(r"\s+", " ", match.group("name")).strip(" .,:;|-")
+            role_text = re.sub(r"\s+", " ", match.group("role")).strip().casefold()
+            if name.casefold() in excluded_names or len(name) > 100 or re.search(r"\d|@|https?://", name, re.I):
+                continue
+            if business_name and re.sub(r"\W", "", name).casefold() == re.sub(r"\W", "", business_name).casefold():
+                continue
+            role = re.sub(r"[^a-z0-9]+", "_", role_text).strip("_")
+            key = (name.casefold(), role)
+            if key in seen_people:
+                continue
+            seen_people.add(key)
+            contacts.append({
+                "name": name[:100],
+                "role": role,
+                "sourceRoute": source_route,
+                "sourceUrl": source_url[:2048],
+                "evidenceText": re.sub(r"\s+", " ", text[max(0, match.start() - 80):min(len(text), match.end() + 100)]).strip()[:300],
+                "requiresReview": True,
+            })
+            if len(contacts) >= 20:
+                break
+        if len(contacts) >= 20:
+            break
+    return {"businessPhones": phones, "publicContacts": contacts}
+
+
+def _structured_public_contacts(entity: dict, source_url: str) -> list[dict]:
+    contacts = []
+    for field, role in (("owner", "owner"), ("founder", "founder"), ("founders", "founder"), ("member", "member")):
+        value = entity.get(field)
+        values = value if isinstance(value, list) else [value]
+        for person in values[:10]:
+            name = _plain(person.get("name"), 100) if isinstance(person, dict) else _plain(person, 100)
+            if name:
+                contacts.append({
+                    "name": name,
+                    "role": role,
+                    "sourceRoute": "business_website",
+                    "sourceUrl": source_url[:2048],
+                    "evidenceText": f"Schema.org JSON-LD identifies {name} as {role}.",
+                    "requiresReview": True,
+                })
+    return contacts
+
+
+def _merge_records(*collections: list[dict], key_fields: tuple[str, ...]) -> list[dict]:
+    merged = []
+    seen = set()
+    for items in collections:
+        for item in items:
+            key = tuple(str(item.get(field, "")).casefold() for field in key_fields)
+            if key not in seen:
+                seen.add(key)
+                merged.append(item)
+    return merged
 
 
 def _profile_from_html(soup: BeautifulSoup, current_url: str) -> dict:
@@ -132,9 +255,25 @@ def _profile_from_html(soup: BeautifulSoup, current_url: str) -> dict:
         profile["description"] = _plain(metadata["description"], 500)
     if metadata["website"].startswith(("http://", "https://")):
         profile["website"] = metadata["website"][:2048]
-    tel = next((anchor.get("href", "")[4:] for anchor in soup.select('a[href^="tel:"]') if anchor.get("href")), "")
-    if tel and not profile.get("phone"):
-        profile["phone"] = _plain(tel, 80)
+    tel_values = [anchor.get("href", "")[4:] for anchor in soup.select('a[href^="tel:"]') if anchor.get("href")]
+    if tel_values and not profile.get("phone"):
+        profile["phone"] = _plain(tel_values[0], 80)
+
+    # Keep structured data already parsed above, but exclude code and hidden template text
+    # from role/name and phone matching so page scripts cannot create contact candidates.
+    for node in soup(["script", "style", "noscript", "svg", "template"]):
+        node.decompose()
+    contact_text = soup.get_text(" ", strip=True)
+    structured_phones = selected.get("telephone", [])
+    if isinstance(structured_phones, str):
+        structured_phones = [structured_phones]
+    contact_text += "\n" + "\n".join([*tel_values[:20], *[_plain(item, 80) for item in structured_phones[:20]]])
+    contact_data = _public_contact_data(contact_text, current_url, "public_page", profile.get("businessName", ""))
+    structured_people = _structured_public_contacts(selected, current_url)
+    profile["businessPhones"] = _merge_records(contact_data["businessPhones"], key_fields=("e164", "raw"))
+    profile["publicContacts"] = _merge_records(structured_people, contact_data["publicContacts"], key_fields=("name", "role"))
+    if not profile.get("phone") and profile["businessPhones"]:
+        profile["phone"] = profile["businessPhones"][0].get("formatted") or profile["businessPhones"][0].get("raw", "")
 
     if structured_objects:
         evidence = json.dumps(selected, ensure_ascii=False, separators=(",", ":"))
@@ -270,6 +409,24 @@ def _extract(result: FetchResult, route: str, business_name: str) -> list[dict]:
     return candidates
 
 
+def _profile_with_contacts(result: FetchResult, route: str, business_name: str) -> dict:
+    profile = dict(result.profile or {})
+    found = _public_contact_data(result.text, result.url, route, business_name)
+    phone_records = _merge_records(profile.get("businessPhones", []), found["businessPhones"], key_fields=("e164", "raw"))
+    person_records = _merge_records(profile.get("publicContacts", []), found["publicContacts"], key_fields=("name", "role"))
+    for item in phone_records:
+        item["sourceRoute"] = route
+        item["sourceUrl"] = result.url[:2048]
+    for item in person_records:
+        item["sourceRoute"] = route
+        item["sourceUrl"] = result.url[:2048]
+    profile["businessPhones"] = phone_records[:20]
+    profile["publicContacts"] = person_records[:20]
+    if not profile.get("phone") and phone_records:
+        profile["phone"] = phone_records[0].get("formatted") or phone_records[0].get("raw", "")
+    return {key: value for key, value in profile.items() if value not in ("", [], None)}
+
+
 async def _robots_allows(url: str, client: httpx.AsyncClient) -> bool:
     parts = urlparse(url)
     robots_url = urlunparse((parts.scheme, parts.netloc, "/robots.txt", "", "", ""))
@@ -311,23 +468,23 @@ def _canonical_entity_name(value: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "", value)
 
 
-async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str]]:
+async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str], list[dict]]:
     """Look up Florida entities conservatively, then read only exact-name filing sources."""
     if len(name.strip()) < 3:
-        return [], ["Sunbiz search skipped because the business name is too short to match reliably."]
+        return [], ["Sunbiz search skipped because the business name is too short to match reliably."], []
     if len(name.strip()) > 45:
-        return [], ["Sunbiz search skipped because its name search accepts at most 45 characters."]
+        return [], ["Sunbiz search skipped because its name search accepts at most 45 characters."], []
     base = "https://search.sunbiz.org/Inquiry/CorporationSearch"
     search_url = base + "/SearchResults?" + urlencode({"inquiryType": "EntityName", "searchTerm": name.strip()})
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as client:
             if not await _robots_allows(search_url, client):
-                return [], ["Sunbiz search is disallowed by robots.txt or its robots file could not be checked."]
+                return [], ["Sunbiz search is disallowed by robots.txt or its robots file could not be checked."], []
         search_result = await fetch_public(search_url)
     except httpx.HTTPError:
-        return [], ["Sunbiz search could not be reached."]
+        return [], ["Sunbiz search could not be reached."], []
     if search_result.error:
-        return [], [f"Sunbiz search: {search_result.error}"]
+        return [], [f"Sunbiz search: {search_result.error}"], []
 
     wanted = _canonical_entity_name(name)
     matches = []
@@ -343,6 +500,7 @@ async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str]]:
     matches = list(dict.fromkeys(matches))[:3]
     candidates: list[dict] = []
     errors: list[str] = []
+    profiles: list[dict] = []
     for entity_name, detail_url in matches:
         async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as client:
             if not await _robots_allows(detail_url, client):
@@ -352,6 +510,9 @@ async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str]]:
             errors.append(f"Sunbiz entity record: {detail.error}")
             continue
         candidates.extend({**candidate, "registryEntityName": entity_name} for candidate in _extract(detail, "sunbiz_entity_record", name))
+        detail_profile = _profile_with_contacts(detail, "sunbiz_entity_record", name)
+        if detail_profile:
+            profiles.append({"sourceRoute": "sunbiz_entity_record", "sourceUrl": detail.url, "profile": detail_profile, "evidenceText": detail.text[:500]})
         pdf_links = []
         for link in detail.links:
             url = link.get("url", "")
@@ -368,7 +529,10 @@ async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str]]:
                 errors.append(f"Sunbiz filing PDF: {filing.error}")
                 continue
             candidates.extend({**candidate, "registryEntityName": entity_name} for candidate in _extract(filing, "sunbiz_pdf_filing", name))
-    return candidates, errors[:5]
+            filing_profile = _profile_with_contacts(filing, "sunbiz_pdf_filing", name)
+            if filing_profile:
+                profiles.append({"sourceRoute": "sunbiz_pdf_filing", "sourceUrl": filing.url, "profile": filing_profile, "evidenceText": filing.text[:500]})
+    return candidates, errors[:5], profiles[:12]
 
 
 async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[list[dict], list[str], list[dict]]:
@@ -401,9 +565,10 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
     route_errors: list[str] = []
     profiles: list[dict] = []
     if state in {"FL", "FLORIDA"}:
-        sunbiz_candidates, sunbiz_errors = await _sunbiz_lookup(name)
+        sunbiz_candidates, sunbiz_errors, sunbiz_profiles = await _sunbiz_lookup(name)
         candidates.extend(sunbiz_candidates)
         route_errors.extend(sunbiz_errors)
+        profiles.extend(sunbiz_profiles)
 
     if not unique_urls and state not in {"FL", "FLORIDA"}:
         return [], ["No public source URL was provided and optional web search is not configured."], []
@@ -421,12 +586,13 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
             route_errors.append(f"{url}: {result.error}")
             continue
         candidates.extend(_extract(result, route, name))
-        if result.profile:
+        profile = _profile_with_contacts(result, route, name)
+        if profile:
             profiles.append({
                 "sourceRoute": route,
                 "sourceUrl": result.url,
-                "profile": result.profile,
-                "evidenceText": result.profile.get("structuredEvidenceText") or result.text[:500],
+                "profile": profile,
+                "evidenceText": profile.get("structuredEvidenceText") or result.text[:500],
             })
 
         # Discover a few same-site Contact/About pages using parsed links from the source page.
@@ -452,12 +618,13 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
                     route_errors.append(f"{contact_url}: {contact.error}")
                 else:
                     candidates.extend(_extract(contact, "same_site_contact_page", name))
-                    if contact.profile:
+                    contact_profile = _profile_with_contacts(contact, "same_site_contact_page", name)
+                    if contact_profile:
                         profiles.append({
                             "sourceRoute": "same_site_contact_page",
                             "sourceUrl": contact.url,
-                            "profile": contact.profile,
-                            "evidenceText": contact.profile.get("structuredEvidenceText") or contact.text[:500],
+                            "profile": contact_profile,
+                            "evidenceText": contact_profile.get("structuredEvidenceText") or contact.text[:500],
                         })
 
     # Stable deduplication keeps the same email from duplicating across routes.
@@ -468,4 +635,4 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
         if key not in seen_candidates:
             seen_candidates.add(key)
             unique_candidates.append(item)
-    return unique_candidates[:20], route_errors[:10], profiles[:12]
+    return unique_candidates[:40], route_errors[:10], profiles[:12]

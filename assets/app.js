@@ -248,8 +248,33 @@ function candidateFor(prospectId) {
     .sort((a, b) => Number(b.confidenceScore || 0) - Number(a.confidenceScore || 0))[0];
 }
 
+function emailCandidatesFor(prospect) {
+  const sources = candidateRows.filter((item) => item.prospectId === prospect.id && item.email)
+    .sort((a, b) => Number(b.confidenceScore || 0) - Number(a.confidenceScore || 0));
+  const imported = Array.isArray(prospect.emailCandidates) ? prospect.emailCandidates : [];
+  const manual = prospect.manualEmail ? [{ email: prospect.manualEmail, sourceUrl: prospect.manualSourceUrl || prospect.website || "", evidenceText: prospect.manualEvidenceText || "", sourceRouteLabel: "Imported or captured", requiresReview: true }] : [];
+  const byEmail = new Map();
+  for (const item of [...sources, ...imported, ...manual]) {
+    const email = String(item.email || "").trim().toLowerCase();
+    if (!email) continue;
+    const entry = byEmail.get(email) || { ...item, email, id: item.id || "", confidenceScore: Number(item.confidenceScore || 0), sources: [] };
+    entry.sources.push(item);
+    if (Number(item.confidenceScore || 0) > Number(entry.confidenceScore || 0)) {
+      entry.id = item.id || entry.id;
+      entry.confidenceScore = Number(item.confidenceScore || 0);
+      entry.sourceRouteLabel = item.sourceRouteLabel || item.sourceRoute || entry.sourceRouteLabel;
+    }
+    byEmail.set(email, entry);
+  }
+  return [...byEmail.values()];
+}
+
+function profileDocsFor(prospectId) {
+  return candidateRows.filter((item) => item.prospectId === prospectId && item.candidateType === "business_profile");
+}
+
 function profileFor(prospectId) {
-  return candidateRows.filter((item) => item.prospectId === prospectId && item.candidateType === "business_profile")[0];
+  return profileDocsFor(prospectId)[0];
 }
 
 function importedMeta(notes) {
@@ -262,23 +287,45 @@ function importedMeta(notes) {
 
 function profileFacts(prospect) {
   const imported = importedMeta(prospect.notes);
-  const profileDoc = profileFor(prospect.id);
-  const profile = profileDoc?.profile || {};
-  const socialUrls = [...new Set([...(Array.isArray(profile.socialUrls) ? profile.socialUrls : []), ...(Array.isArray(imported.socialUrls) ? imported.socialUrls : [])])].slice(0, 8);
+  const profileDocs = profileDocsFor(prospect.id);
+  const profiles = profileDocs.map((item) => item.profile || {});
+  const pick = (key) => profiles.map((profile) => profile[key]).find((value) => value !== undefined && value !== null && value !== "") || "";
+  const mergeBy = (items, keyFn, limit) => {
+    const seen = new Set();
+    return items.filter((item) => {
+      const key = keyFn(item);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }).slice(0, limit);
+  };
+  const socialUrls = [...new Set([...profiles.flatMap((profile) => Array.isArray(profile.socialUrls) ? profile.socialUrls : []), ...(Array.isArray(imported.socialUrls) ? imported.socialUrls : [])])].slice(0, 8);
+  const businessPhones = mergeBy([
+    ...(Array.isArray(prospect.businessPhones) ? prospect.businessPhones : []),
+    ...profiles.flatMap((profile) => Array.isArray(profile.businessPhones) ? profile.businessPhones : []),
+    ...(prospect.phone ? [normalizePublicPhone(prospect.phone, prospect.manualSourceUrl || prospect.website || "", "imported")].filter(Boolean) : [])
+  ], (item) => String(item.e164 || item.raw || item.formatted || "").replace(/\D/g, "") || item.raw, 40);
+  const publicContacts = mergeBy([
+    ...(Array.isArray(prospect.publicContacts) ? prospect.publicContacts : []),
+    ...profiles.flatMap((profile) => Array.isArray(profile.publicContacts) ? profile.publicContacts : [])
+  ], (item) => String(item.name || "").trim().toLowerCase() + "|" + String(item.role || "").toLowerCase(), 20);
+  const firstProfileUrl = profileDocs.find((item) => item.sourceUrl)?.sourceUrl || "";
   return {
-    address: profile.address || imported.address || "",
-    postalCode: profile.postalCode || imported.postalCode || "",
-    email: profile.email || prospect.manualEmail || "",
-    phone: profile.phone || prospect.phone || "",
-    website: profile.website || prospect.website || "",
-    hours: profile.hours || imported.hours || "",
-    description: profile.description || imported.description || "",
+    address: pick("address") || imported.address || "",
+    postalCode: pick("postalCode") || imported.postalCode || "",
+    email: pick("email") || prospect.manualEmail || "",
+    phone: businessPhones[0]?.formatted || pick("phone") || prospect.phone || "",
+    businessPhones,
+    publicContacts,
+    website: pick("website") || prospect.website || "",
+    hours: pick("hours") || imported.hours || "",
+    description: pick("description") || imported.description || "",
     rating: imported.rating || "",
     reviewCount: imported.reviewCount || "",
     placeId: imported.placeId || "",
     googleMapsUrl: imported.googleMapsUrl || "",
     socialUrls,
-    evidenceUrl: profileDoc?.sourceUrl || "",
+    evidenceUrl: firstProfileUrl,
   };
 }
 
@@ -294,9 +341,11 @@ function renderProspects() {
   const category = $("#categoryFilter")?.value || "";
   const websiteFilter = $("#websiteFilter")?.value || "";
   const filtered = prospectRows.filter((prospect) => {
-    const candidate = candidateFor(prospect.id);
     const facts = profileFacts(prospect);
-    const text = [prospect.businessName, prospect.category, prospect.city, prospect.state, prospect.phone, prospect.website, facts.address, facts.description, candidate?.email, prospect.manualEmail].join(" ").toLowerCase();
+    const emails = emailCandidatesFor(prospect).map((item) => item.email);
+    const names = facts.publicContacts.map((item) => item.name + " " + item.role);
+    const phones = facts.businessPhones.map((item) => item.formatted || item.raw || item.e164);
+    const text = [prospect.businessName, prospect.category, prospect.city, prospect.state, prospect.phone, prospect.website, facts.address, facts.description, ...emails, ...names, ...phones].join(" ").toLowerCase();
     const hasWebsite = Boolean(prospect.website || facts.website);
     return (!needle || text.includes(needle))
       && (!status || prospect.status === status)
@@ -310,26 +359,29 @@ function renderProspects() {
     return;
   }
   body.innerHTML = filtered.map((prospect) => {
-    const candidate = candidateFor(prospect.id);
+    const emails = emailCandidatesFor(prospect);
     const facts = profileFacts(prospect);
-    const contact = candidate
-      ? '<b>' + escapeHtml(candidate.email) + '</b><small>Evidence score ' + escapeHtml(candidate.confidenceScore ?? "—") + '/10 · mailbox unverified</small>'
-      : prospect.manualEmail
-        ? '<b>' + escapeHtml(prospect.manualEmail) + '</b><small>Provided/captured · unverified</small>'
-      : '<span class="muted">' + (prospect.status === "not_found" ? "No public email" : "No candidate yet") + "</span>";
-    const emailEvidence = candidate
-      ? '<details><summary class="evidence-link">View evidence</summary><div class="evidence-box"><b>' + escapeHtml(candidate.sourceRouteLabel || candidate.sourceRoute || "Source") + '</b><br><a href="' + escapeHtml(candidate.sourceUrl || "#") + '" target="_blank" rel="noopener">' + escapeHtml(candidate.sourceUrl || "No source URL") + '</a><p>' + escapeHtml(candidate.evidenceText || "No excerpt saved.") + '</p><small>' + escapeHtml(candidate.domainCheckLabel || "Mailbox not confirmed") + '</small><small>' + escapeHtml(candidate.scoreBasis || "Initial evidence rubric; not a probability.") + '</small><div class="feedback-actions"><button class="mini-button" data-feedback="' + escapeHtml(candidate.id) + '" data-label="correct">Correct</button><button class="mini-button" data-feedback="' + escapeHtml(candidate.id) + '" data-label="wrong">Wrong</button><button class="mini-button" data-feedback="' + escapeHtml(candidate.id) + '" data-label="stale">Stale</button></div></div></details>'
-      : prospect.manualEmail
-        ? '<details><summary class="evidence-link">View capture</summary><div class="evidence-box"><b>Provided or browser-captured · unverified</b><br><a href="' + escapeHtml(prospect.manualSourceUrl || prospect.website || "#") + '" target="_blank" rel="noopener">' + escapeHtml(prospect.manualSourceUrl || prospect.website || "No source URL") + '</a><p>' + escapeHtml(prospect.manualEvidenceText || "No evidence excerpt was included.") + '</p></div></details>'
+    const emailSummary = emails.length
+      ? emails.slice(0, 6).map((item) => '<div class="contact-item"><b>' + escapeHtml(item.email) + '</b><small>' + (item.confidenceScore ? 'Evidence score ' + escapeHtml(item.confidenceScore) + '/10' : 'Source listed') + ' · ' + escapeHtml(item.sources.length) + ' source(s)</small></div>').join("") + (emails.length > 6 ? '<small>+' + (emails.length - 6) + ' more emails</small>' : '')
+      : "";
+    const phoneSummary = facts.businessPhones.slice(0, 3).map((item) => '<div class="contact-item"><b>' + escapeHtml(item.formatted || item.raw || item.e164) + '</b><small>' + (item.kind === "fax" ? "Fax number" : "Publicly listed number") + '</small></div>').join("") + (facts.businessPhones.length > 3 ? '<small>+' + (facts.businessPhones.length - 3) + ' more numbers</small>' : '');
+    const peopleSummary = facts.publicContacts.slice(0, 3).map((item) => '<div class="contact-item"><b>' + escapeHtml(item.name) + '</b><small>' + escapeHtml(String(item.role || "public contact").replace(/_/g, " ")) + ' · source needs review</small></div>').join("") + (facts.publicContacts.length > 3 ? '<small>+' + (facts.publicContacts.length - 3) + ' more names</small>' : '');
+    const contact = [emailSummary, phoneSummary, peopleSummary].filter(Boolean).join("") || '<span class="muted">' + (prospect.status === "not_found" ? "No public contact found" : "No contact candidate yet") + "</span>";
+    const emailEvidence = emails.length
+      ? '<details><summary class="evidence-link">Review ' + emails.length + ' email candidate(s)</summary><div class="evidence-box">' + emails.map((item) => '<div class="contact-evidence"><b>' + escapeHtml(item.email) + '</b>' + item.sources.map((source) => '<small>' + escapeHtml(source.sourceRouteLabel || source.sourceRoute || "Source") + ' · ' + escapeHtml(source.domainCheckLabel || "Mailbox not confirmed") + '</small><a href="' + escapeHtml(source.sourceUrl || "#") + '" target="_blank" rel="noopener">' + escapeHtml(source.sourceUrl || "No source URL") + '</a><p>' + escapeHtml(source.evidenceText || "No excerpt saved.") + '</p>').join("") + (item.id ? '<small>' + escapeHtml(item.scoreBasis || "Evidence score is a review rubric, not a probability.") + '</small><div class="feedback-actions"><button class="mini-button" data-feedback="' + escapeHtml(item.id) + '" data-label="correct">Correct</button><button class="mini-button" data-feedback="' + escapeHtml(item.id) + '" data-label="wrong">Wrong</button><button class="mini-button" data-feedback="' + escapeHtml(item.id) + '" data-label="stale">Stale</button></div>' : '') + '</div>').join("") + '</div></details>'
       : '<span class="muted">—</span>';
+    const phoneText = facts.businessPhones.map((item) => [item.formatted || item.raw, item.e164 && item.e164 !== item.formatted ? item.e164 : ""].filter(Boolean).join(" · ")).join("; ");
+    const peopleText = facts.publicContacts.map((item) => item.name + " — " + String(item.role || "contact").replace(/_/g, " ")).join("; ");
     const factsList = [
-      ["Address", facts.address], ["Postal code", facts.postalCode], ["Phone", facts.phone], ["Website", facts.website], ["Hours", facts.hours],
+      ["Address", facts.address], ["Postal code", facts.postalCode], ["Publicly listed phone numbers", phoneText || facts.phone], ["Website", facts.website], ["Hours", facts.hours],
       ["Rating", facts.rating], ["Reviews", facts.reviewCount], ["About", facts.description],
+      ["Publicly named people and roles", peopleText],
       ["Google Place ID", facts.placeId],
     ].filter(([, value]) => value);
     const links = [facts.googleMapsUrl && ["Google Maps profile", facts.googleMapsUrl], facts.evidenceUrl && ["Crawled source", facts.evidenceUrl], ...facts.socialUrls.map((url) => ["Social profile", url])].filter(Boolean);
-    const profileEvidence = factsList.length || links.length
-      ? '<details><summary class="evidence-link">Business information</summary><div class="evidence-box">' + factsList.map(([label, value]) => '<small><b>' + escapeHtml(label) + ':</b> ' + escapeHtml(value) + '</small>').join("") + links.map(([label, url]) => '<small><a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + escapeHtml(label) + ' ↗</a></small>').join("") + '</div></details>'
+    const contactSources = [...facts.businessPhones, ...facts.publicContacts].map((item) => '<div class="contact-evidence"><b>' + escapeHtml(item.formatted || item.name || item.raw || "Public contact") + (item.role ? ' · ' + escapeHtml(String(item.role).replace(/_/g, " ")) : '') + '</b><small>' + escapeHtml(item.sourceRoute || "Source") + (item.kind ? ' · ' + escapeHtml(item.kind.replace(/_/g, " ")) : '') + '</small><p>' + escapeHtml(item.evidenceText || "Source-listed business contact; confirm before use.") + '</p>' + (item.sourceUrl ? '<a href="' + escapeHtml(item.sourceUrl) + '" target="_blank" rel="noopener">Open evidence source ↗</a>' : '') + '</div>').join("");
+    const profileEvidence = factsList.length || links.length || contactSources
+      ? '<details><summary class="evidence-link">Business information</summary><div class="evidence-box">' + factsList.map(([label, value]) => '<small><b>' + escapeHtml(label) + ':</b> ' + escapeHtml(value) + '</small>').join("") + links.map(([label, url]) => '<small><a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + escapeHtml(label) + ' ↗</a></small>').join("") + contactSources + '</div></details>'
       : "";
     const evidence = '<div class="evidence-stack">' + emailEvidence + profileEvidence + '</div>';
     const location = [prospect.city, prospect.state].filter(Boolean).join(", ") || "—";
@@ -339,9 +391,8 @@ function renderProspects() {
 }
 
 function updateMetrics() {
-  const found = new Set(candidateRows.filter((item) => item.email).map((item) => item.prospectId));
   $("#metricProspects").textContent = String(prospectRows.length);
-  $("#metricFound").textContent = String(prospectRows.filter((item) => found.has(item.id) || item.manualEmail).length);
+  $("#metricFound").textContent = String(prospectRows.filter((item) => emailCandidatesFor(item).length > 0).length);
   $("#metricReview").textContent = String(prospectRows.filter((item) => item.status === "needs_review").length);
   $("#metricNotFound").textContent = String(prospectRows.filter((item) => item.status === "not_found").length);
 }
@@ -397,6 +448,63 @@ function firstValue(row, aliases) {
   return "";
 }
 
+function listValues(value, separators = /[,;|\n]+/) {
+  if (Array.isArray(value)) return value.flatMap((item) => item && typeof item === "object" ? [item] : listValues(item, separators));
+  if (value && typeof value === "object") return [value];
+  return String(value || "").split(separators).map((item) => item.trim()).filter(Boolean);
+}
+
+function structuredValues(value, separators) {
+  if (Array.isArray(value)) return value;
+  if (value && typeof value === "object") return [value];
+  const text = String(value || "").trim();
+  if (text.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {}
+  }
+  return listValues(text, separators);
+}
+
+function normalizePublicPhone(value, sourceUrl = "", sourceRoute = "imported", evidenceText = "") {
+  if (value && typeof value === "object") {
+    const raw = String(value.raw || value.formatted || value.e164 || "").trim();
+    if (!raw) return null;
+    const sourceUrlValue = value.sourceUrl || value.source_url || sourceUrl;
+    const sourceRouteValue = value.sourceRoute || value.source_route || sourceRoute;
+    const evidenceValue = value.evidenceText || value.evidence_text || evidenceText;
+    const normalized = normalizePublicPhone(raw, sourceUrlValue, sourceRouteValue, evidenceValue);
+    return { ...normalized, ...value, raw, formatted: value.formatted || normalized.formatted, e164: value.e164 || normalized.e164, sourceUrl: sourceUrlValue, sourceRoute: sourceRouteValue, evidenceText: evidenceValue };
+  }
+  const raw = String(value || "").replace(/\s+/g, " ").trim().slice(0, 80);
+  if (!raw) return null;
+  const extension = raw.match(/(?:ext\.?|x)\s*(\d{1,6})$/i)?.[1] || "";
+  const base = raw.replace(/(?:ext\.?|x)\s*\d{1,6}$/i, "").trim();
+  const digits = base.replace(/\D/g, "");
+  let e164 = "";
+  let formatted = raw;
+  if (base.startsWith("+") && digits.length >= 8 && digits.length <= 15) e164 = "+" + digits;
+  else if (digits.length === 10 && /^[2-9]/.test(digits[0]) && /^[2-9]/.test(digits[3])) e164 = "+1" + digits;
+  else if (digits.length === 11 && digits.startsWith("1") && /^[2-9]/.test(digits[1]) && /^[2-9]/.test(digits[4])) e164 = "+" + digits;
+  if (e164.startsWith("+1") && e164.replace(/\D/g, "").length === 11) {
+    const national = e164.replace(/\D/g, "").slice(1);
+    formatted = "(" + national.slice(0, 3) + ") " + national.slice(3, 6) + "-" + national.slice(6);
+  }
+  if (extension) formatted += " ext. " + extension;
+  return {
+    raw,
+    formatted: formatted.slice(0, 80),
+    e164,
+    extension,
+    kind: /\bfax\b|facsimile/i.test(evidenceText) ? "fax" : "public_source_number",
+    sourceRoute,
+    sourceUrl: cleanUrl(sourceUrl),
+    evidenceText: String(evidenceText || "").slice(0, 300),
+    requiresReview: true
+  };
+}
+
 function normalizeInput(row) {
   const fields = Object.fromEntries(Object.entries(row || {}).map(([key, value]) => [
     key.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""), value
@@ -424,6 +532,75 @@ function normalizeInput(row) {
   ).filter(Boolean);
   socialUrls.push(...firstValue(fields, ["social_urls", "social_links"]).split(/[\s,|]+/).map(cleanUrl).filter(Boolean));
   if (socialUrls.length) meta.socialUrls = [...new Set(socialUrls)].slice(0, 5);
+  const sourceUrl = cleanUrl(firstValue(fields, ["sourceurl", "source_url", "website", "website_url", "url"]));
+  const emailEvidence = firstValue(fields, ["evidencetext", "evidence_text", "email_evidence"]);
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+  const emailValues = Object.entries(fields)
+    .filter(([key]) => /^(?:email|email_address|primary_email|business_email|contact_email|website_email|owner_email|founder_email|principal_email|personal_email|emails|all_emails|public_emails|email_candidates)(?:_\d+)?$/.test(key))
+    .flatMap(([key, value]) => structuredValues(value, /[,;|\n]+/));
+  emailValues.sort((a, b) => Number(Boolean(b && typeof b === "object" && (b.sourceRoute || b.sourceUrl || b.evidenceText))) - Number(Boolean(a && typeof a === "object" && (a.sourceRoute || a.sourceUrl || a.evidenceText))));
+  const emailCandidates = [];
+  const seenEmails = new Set();
+  for (const value of emailValues) {
+    const item = value && typeof value === "object" ? value : { email: value };
+    const email = String(item.email || "").trim().toLowerCase();
+    const route = item.sourceRoute || item.source_route || "user_import";
+    const candidateUrl = cleanUrl(item.sourceUrl || item.source_url || sourceUrl);
+    const identity = [email, route, candidateUrl].join("|").toLowerCase();
+    if (!emailRegex.test(email) || seenEmails.has(identity)) continue;
+    seenEmails.add(identity);
+    emailCandidates.push({
+      email,
+      sourceRoute: route,
+      sourceRouteLabel: item.sourceRouteLabel || item.source_route_label || "Imported or captured",
+      sourceUrl: candidateUrl,
+      evidenceText: String(item.evidenceText || item.evidence_text || emailEvidence || "").slice(0, 300),
+      confidenceScore: Math.max(0, Math.min(10, Number(item.confidenceScore || item.confidence_score || 0))),
+      domainCheckLabel: String(item.domainCheckLabel || item.domain_check_label || "Mailbox not verified").slice(0, 100),
+      requiresReview: true
+    });
+    if (emailCandidates.length >= 40) break;
+  }
+  const phoneValues = Object.entries(fields)
+    .filter(([key]) => /^(?:phone|phone_number|telephone|telephone_number|tel|business_phone|primary_phone|phone_numbers|business_phones|phones|phone_candidates|phone_evidence)(?:_\d+)?$/.test(key))
+    .flatMap(([, value]) => structuredValues(value, /[;,|\n]+/));
+  phoneValues.sort((a, b) => Number(Boolean(b && typeof b === "object" && (b.sourceRoute || b.sourceUrl || b.evidenceText))) - Number(Boolean(a && typeof a === "object" && (a.sourceRoute || a.sourceUrl || a.evidenceText))));
+  const businessPhones = [];
+  const seenPhones = new Set();
+  for (const value of phoneValues) {
+    const item = normalizePublicPhone(value, sourceUrl, "user_import", firstValue(fields, ["phone_evidence", "phone_evidence_text"]));
+    if (!item) continue;
+    const key = String(item.e164 || item.raw).replace(/\D/g, "") || item.raw;
+    if (!key || seenPhones.has(key)) continue;
+    seenPhones.add(key);
+    businessPhones.push(item);
+    if (businessPhones.length >= 40) break;
+  }
+  const publicContacts = [];
+  const contactValues = structuredValues(fields.public_contacts || fields.contacts || [], /[;|\n]+/);
+  for (const value of contactValues) {
+    if (!value || typeof value !== "object" || !String(value.name || "").trim()) continue;
+    publicContacts.push({
+      name: String(value.name).trim().slice(0, 100),
+      role: String(value.role || "business_contact").toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 60),
+      sourceRoute: value.sourceRoute || value.source_route || "user_import",
+      sourceUrl: cleanUrl(value.sourceUrl || value.source_url || sourceUrl),
+      evidenceText: String(value.evidenceText || value.evidence_text || "").slice(0, 300),
+      requiresReview: true
+    });
+  }
+  const explicitRoles = [
+    ["owner_name", "owner"], ["owner", "owner"], ["founder_name", "founder"], ["founder", "founder"],
+    ["registered_agent", "registered_agent"], ["registered_agent_name", "registered_agent"],
+    ["authorized_person", "authorized_person"], ["organizer", "organizer"], ["manager_name", "manager"],
+    ["president_name", "president"], ["officer_name", "officer"], ["director_name", "director"],
+    ["contact_name", "business_contact"]
+  ];
+  for (const [field, role] of explicitRoles) {
+    const name = firstValue(fields, [field]);
+    if (name) publicContacts.push({ name: name.slice(0, 100), role, sourceRoute: "user_import", sourceUrl, evidenceText: firstValue(fields, ["contact_evidence", "owner_evidence"]).slice(0, 300), requiresReview: true });
+  }
+  const uniqueContacts = [...new Map(publicContacts.map((person) => [(person.name + "|" + person.role).toLowerCase(), person])).values()].slice(0, 20);
   const baseNotes = firstValue(fields, ["notes", "internal_notes"]).slice(0, Object.keys(meta).length ? 120 : 500);
   let notes = baseNotes;
   if (Object.keys(meta).length) {
@@ -437,13 +614,16 @@ function normalizeInput(row) {
     category: firstValue(fields, ["category", "industry", "type", "niche", "business_type"]).slice(0, 80),
     city: firstValue(fields, ["city", "town", "locality"]).slice(0, 100),
     state: firstValue(fields, ["state", "region", "province"]).slice(0, 50),
-    phone: firstValue(fields, ["phone", "phone_number", "telephone", "tel", "business_phone", "primary_phone"]).slice(0, 40),
+    phone: businessPhones[0]?.formatted || firstValue(fields, ["phone", "phone_number", "telephone", "tel", "business_phone", "primary_phone"]).slice(0, 40),
     website: cleanUrl(firstValue(fields, ["website", "website_url", "business_website", "url", "domain"])),
     sourceUrlsText: firstValue(fields, ["sourceurls", "source_urls", "source_urls_text", "source_url", "source", "sources", "website_contact_url"]).slice(0, 4000),
     notes,
-    manualEmail: firstValue(fields, ["email", "email_address", "contact_email", "business_email", "primary_email"]).slice(0, 254).toLowerCase(),
-    manualEvidenceText: firstValue(fields, ["evidencetext", "evidence_text", "email_evidence"]).slice(0, 500),
+    manualEmail: emailCandidates[0]?.email || "",
+    manualEvidenceText: emailEvidence.slice(0, 500),
     manualSourceUrl: cleanUrl(firstValue(fields, ["manualsourceurl", "manual_source_url", "sourceurl", "source_url"])),
+    emailCandidates,
+    businessPhones,
+    publicContacts: uniqueContacts,
     status: "new"
   };
 }
@@ -627,12 +807,17 @@ async function submitFeedback(candidateId, label) {
 }
 
 function exportCSV() {
-  const header = ["business_name", "category", "address", "postal_code", "city", "state", "phone", "website", "hours", "rating", "review_count", "google_place_id", "google_maps_url", "social_urls", "status", "email", "confidence_score", "source_url", "evidence_text"];
+  const header = ["business_name", "category", "address", "postal_code", "city", "state", "phone", "business_phones", "phone_evidence", "website", "hours", "rating", "review_count", "google_place_id", "google_maps_url", "social_urls", "public_contacts", "status", "email", "all_emails", "email_candidates", "confidence_score", "source_url", "evidence_text"];
   const lines = [header.join(",")];
   for (const row of prospectRows) {
     const candidate = candidateFor(row.id);
     const facts = profileFacts(row);
-    const values = [row.businessName, row.category, facts.address, facts.postalCode, row.city, row.state, facts.phone, facts.website, facts.hours, facts.rating, facts.reviewCount, facts.placeId, facts.googleMapsUrl, facts.socialUrls.join(" | "), row.status, candidate?.email || row.manualEmail, candidate?.confidenceScore, candidate?.sourceUrl || row.manualSourceUrl, candidate?.evidenceText || row.manualEvidenceText];
+    const emails = emailCandidatesFor(row);
+    const phoneList = facts.businessPhones.map((item) => [item.formatted || item.raw, item.e164].filter(Boolean).join(" ")).join(" | ");
+    const publicContacts = JSON.stringify(facts.publicContacts);
+    const phoneEvidence = JSON.stringify(facts.businessPhones);
+    const emailCandidates = JSON.stringify(emails.flatMap((item) => (item.sources.length ? item.sources : [item]).map((source) => ({ email: item.email, sourceRoute: source.sourceRoute || "", sourceRouteLabel: source.sourceRouteLabel || source.sourceRoute || "", sourceUrl: source.sourceUrl || "", evidenceText: source.evidenceText || "", confidenceScore: item.confidenceScore, requiresReview: source.requiresReview !== false }))));
+    const values = [row.businessName, row.category, facts.address, facts.postalCode, row.city, row.state, facts.phone, phoneList, phoneEvidence, facts.website, facts.hours, facts.rating, facts.reviewCount, facts.placeId, facts.googleMapsUrl, facts.socialUrls.join(" | "), publicContacts, row.status, candidate?.email || row.manualEmail, emails.map((item) => item.email).join(" | "), emailCandidates, candidate?.confidenceScore, candidate?.sourceUrl || row.manualSourceUrl, candidate?.evidenceText || row.manualEvidenceText];
     lines.push(values.map((value) => '"' + String(value ?? "").replace(/"/g, '""') + '"').join(","));
   }
   const blob = new Blob([lines.join("\r\n")], { type: "text/csv;charset=utf-8" });

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0a1020">
-  <meta name="description" content="Private prospect research and evidence-based email enrichment workspace.">
+  <meta name="description" content="Private prospect research with evidence-backed public email, phone, and business contact enrichment.">
   <title>Vivara Forge — Lead Workspace</title>
   <link rel="stylesheet" href="./assets/app.css">
   <link rel="manifest" href="./manifest.webmanifest">
@@ -74,7 +74,7 @@
           <div>
             <p class="eyebrow">EVIDENCE FIRST</p>
             <h1>Find the contact.<br><em>Keep the proof.</em></h1>
-            <p class="hero-copy">Every result carries its source and evidence. If no public email is found, the record stays “Not found.” No guessed addresses.</p>
+            <p class="hero-copy">Collect multiple public emails, listed phone numbers, and people only when a source states their role. Every result carries evidence; missing details stay blank.</p>
             <div class="hero-actions">
               <button class="button primary" data-goto="prospects">Import prospects <span>→</span></button>
               <button class="button quiet" data-goto="local">Find nearby businesses</button>
@@ -86,18 +86,18 @@
 
         <div class="metric-grid">
           <article class="metric-card"><span class="metric-icon blue">◎</span><div><small>Prospects saved</small><strong id="metricProspects">0</strong></div><span class="metric-note">in your workspace</span></article>
-          <article class="metric-card"><span class="metric-icon violet">✉</span><div><small>Emails found</small><strong id="metricFound">0</strong></div><span class="metric-note">with source evidence</span></article>
+          <article class="metric-card"><span class="metric-icon violet">✉</span><div><small>Prospects with email</small><strong id="metricFound">0</strong></div><span class="metric-note">with source evidence</span></article>
           <article class="metric-card"><span class="metric-icon amber">◷</span><div><small>Needs review</small><strong id="metricReview">0</strong></div><span class="metric-note">human decision needed</span></article>
           <article class="metric-card"><span class="metric-icon green">✓</span><div><small>Not found</small><strong id="metricNotFound">0</strong></div><span class="metric-note">no public match returned</span></article>
         </div>
 
         <div class="section-heading"><div><p class="eyebrow">YOUR WORKFLOW</p><h2>Start with a list or a place</h2></div><span class="subtle">Jobs save to Firestore and can resume after you leave.</span></div>
         <div class="workflow-grid">
-          <button class="workflow-card" data-goto="prospects"><span class="step-no">01</span><span class="workflow-symbol">⇧</span><b>Import a prospect list</b><small>CSV or JSON. Keep your original business name, city, phone, and source links.</small><span class="card-arrow">→</span></button>
+          <button class="workflow-card" data-goto="prospects"><span class="step-no">01</span><span class="workflow-symbol">⇧</span><b>Import a prospect list</b><small>CSV or JSON. Keep the business name, location, any listed contact details, and source links.</small><span class="card-arrow">→</span></button>
           <button class="workflow-card" data-goto="local"><span class="step-no">02</span><span class="workflow-symbol">⌖</span><b>Search nearby</b><small>Use open local business data, or open a Google Maps search without extracting its listings.</small><span class="card-arrow">→</span></button>
           <button class="workflow-card" data-goto="jobs"><span class="step-no">03</span><span class="workflow-symbol">↻</span><b>Run enrichment</b><small>Website and PDF routes run on the worker. The browser can close after a job is queued.</small><span class="card-arrow">→</span></button>
         </div>
-        <div class="callout"><span class="callout-icon">i</span><p><b>Source, not guesswork.</b> A domain check does not prove a mailbox exists. Candidate emails remain labeled with the page or document they came from and a review score.</p></div>
+        <div class="callout"><span class="callout-icon">i</span><p><b>Source, not guesswork.</b> Public emails, numbers, and role names stay linked to where they appeared. A registered agent is shown as a registered agent, not assumed to be the owner. The system does not look for private personal numbers.</p></div>
       </section>
 
       <section id="view-prospects" class="view">
@@ -165,8 +165,8 @@
         <div id="jobsList" class="jobs-list"><div class="empty-help visible"><div class="empty-illustration">◷</div><b>No jobs yet</b><p>Select prospects and queue them to start.</p></div></div>
         <div class="section-heading"><div><p class="eyebrow">ROUTE STATUS</p><h2>What can be checked</h2></div></div>
         <div class="route-grid">
-          <article class="route-card"><span class="route-icon">↗</span><div><b>Business website</b><p>Checks the supplied site and a small number of contact/about pages.</p></div><span class="route-state ready">Backend</span></article>
-          <article class="route-card"><span class="route-icon">▤</span><div><b>Florida Sunbiz filings</b><p>Exact entity-name match; filing emails need human review.</p></div><span class="route-state ready">Florida</span></article>
+          <article class="route-card"><span class="route-icon">↗</span><div><b>Business website and contact pages</b><p>Collects multiple visible emails, phone numbers, and names only when a page explicitly states the person's role.</p></div><span class="route-state ready">Backend</span></article>
+          <article class="route-card"><span class="route-icon">▤</span><div><b>Florida Sunbiz filings</b><p>Exact entity-name match. Public filing roles such as registered agent, officer, and manager keep their exact labels and need human review.</p></div><span class="route-state ready">Florida</span></article>
           <article class="route-card"><span class="route-icon">▧</span><div><b>Public PDF records</b><p>Downloads to memory, extracts text, then discards the PDF bytes.</p></div><span class="route-state ready">Backend</span></article>
           <article class="route-card"><span class="route-icon">⌕</span><div><b>Public web search</b><p>Optional API route. It stays off until a search API is configured.</p></div><span class="route-state optional">Optional key</span></article>
           <article class="route-card"><span class="route-icon">⌖</span><div><b>Local open data</b><p>Nearby discovery is available in Local Discovery with attribution.</p></div><span class="route-state open">Open data</span></article>

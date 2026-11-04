@@ -10,18 +10,21 @@
 </head>
 <body>
   <header><div class="mark">V<span>F</span></div><div><h1>Vivara Forge</h1><small>Single-page contact capture</small></div></header>
-  <button id="capture" class="primary" style="width:100%">Capture this page</button>
+  <label for="tabSelect">Choose an open tab</label><select id="tabSelect"></select>
+  <button id="capture" class="primary" style="width:100%;margin-top:10px">Capture selected tab</button>
   <div id="message" class="help" role="status"></div>
   <div id="fields" hidden>
     <label for="businessName">Business name</label><input id="businessName" maxlength="160" placeholder="Review and edit this name">
     <div class="grid"><div><label for="city">City</label><input id="city" maxlength="100"></div><div><label for="state">State</label><input id="state" maxlength="50"></div></div>
     <label for="category">Category</label><input id="category" maxlength="80" placeholder="Optional">
     <label for="phone">Phone number</label><input id="phone" maxlength="40" placeholder="Optional">
+    <label for="address">Address</label><input id="address" maxlength="240" placeholder="Only if shown on the page">
+    <label for="hours">Business hours</label><input id="hours" maxlength="260" placeholder="Only if shown on the page">
     <label for="email">Email candidate</label><select id="email"><option value="">No email selected</option></select>
     <label for="evidence">Visible evidence excerpt</label><textarea id="evidence" maxlength="500" readonly></textarea>
     <div class="buttons"><button id="download" class="primary">Download JSON</button></div>
   </div>
-  <p class="fine">Capture runs only after your click and reads visible page text. It does not validate that a mailbox works. Extraction is disabled on Google Maps pages.</p>
+  <p class="fine">Capture runs only after your click and reads the selected tab's rendered page plus structured business metadata. Chrome may ask for access to that site's page. It does not validate mailboxes; extraction is disabled on Google Maps pages.</p>
   <script src="popup.js"></script>
 </body>
 </html>

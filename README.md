@@ -4,15 +4,17 @@ Account-scoped, mobile-friendly prospect workspace for importing leads, collecti
 
 ## What it does
 
-- Email/password sign-in and public account creation, plus Google sign-in. Each account sees only its own Firestore records.
+- Email/password sign-in and account creation, plus Google sign-in. Each account sees only its own Firestore records. The verified addresses `fugthchat@gmail.com` and `fugthmanagement@gmail.com` are protected administrators.
 - Imports prospect CSV or JSON, deduplicates the current list, and exports results to CSV.
+- Maps common lead-list columns into business name, niche, city/state, phone, website, email, address, Google Maps link, hours, rating, review count, and social URLs. Unavailable values stay blank. The Prospects view filters by niche and website presence.
+- Optionally queues each imported batch automatically. The worker can save website profile details from visible HTML and Schema.org JSON-LD alongside email candidates.
 - Saves prospects, evidence candidates, ratings, and queue state in Firestore.
 - Queues batches up to 400 records. The worker processes the saved queue after the page closes and resumes queued/running jobs after worker restart.
 - Checks a supplied business website, a limited number of same-site contact/about pages, supplied public source URLs including PDFs, Florida Sunbiz exact-name entity records and up to three linked filing PDFs, and up to five optional search results when a Brave Search key is configured. Search queries send the business name and location to that configured search provider.
-- Extracts only email strings that appear in fetched source text. It never invents likely email patterns. PDF bytes are held in memory for extraction and not saved to disk.
+- Extracts only email and business profile fields that appear in fetched public page text or structured metadata. It never invents likely email patterns or executes fetched website JavaScript. PDF bytes are held in memory for extraction and not saved to disk.
 - Marks filing, directory, and search-result emails as needing human review. A score is an evidence rubric, not a probability or mailbox verification.
 - Finds nearby OpenStreetMap records with attribution and provides a separate Google Maps search link. It does not scrape Google Maps.
-- Adds an optional desktop unpacked Chrome companion to capture a single user-opened business webpage and download a JSON file for import. It blocks capture on Google Maps.
+- Adds an optional desktop unpacked Chrome companion with a tab selector to capture a selected public business webpage and download JSON. Chrome asks for access to each selected site's page when needed. It blocks capture on Google Maps.
 
 ## 1. GitHub Pages
 
@@ -28,17 +30,16 @@ The web app uses project `vivara-forge`, email/password account creation and sig
 
 1. In **Authentication → Sign-in method**, enable Email/Password and Google if you plan to use both.
 2. In **Authentication → Settings → Authorized domains**, add `fugthmanagement.github.io`. For local testing, add `localhost`.
-3. Open the deployed app and choose **New here? Create account**, or use Google sign-in (which creates a Firebase account on first use). After signing in, open **Settings** and copy the account UID for the worker configuration below.
+3. Open the deployed app and choose **New here? Create account**, or use Google sign-in (which creates a Firebase account on first use). Verify email for either protected admin address. The Settings page lets you copy the signed-in user's UID if you want to pin a worker to that account.
 4. Review `firestore.rules`, then deploy it using the Firebase CLI from this repository:
 
    ```sh
    npm install -g firebase-tools
    firebase login
-   firebase use vivara-forge
-   firebase deploy --only firestore:rules
+   firebase deploy --only firestore:rules --project vivara-forge
    ```
 
-The rules let a signed-in user access only their own prospect, job, and feedback paths. Candidate evidence is read-only to the browser and written by the server worker. The worker only accepts the UID configured as `ADMIN_UID`; other accounts cannot read your records or use your enrichment worker.
+The included rules let a signed-in user access only their own prospect, job, feedback, and candidate paths. Candidate evidence is read-only to the browser and written by the server worker. A Firestore `permission-denied` error during import usually means these rules have not yet been published to `vivara-forge`; signing in alone does not publish them. The worker allows only verified configured administrators, not every account that can sign up.
 
 Firestore can store the small JSON prospect/evidence records without requiring a Cloud Functions deployment. Storage usage and request quotas still apply; this design does not depend on Cloud Storage or Cloud Functions.
 
@@ -47,20 +48,23 @@ Firestore can store the small JSON prospect/evidence records without requiring a
 Create a **new Docker Space** for this project. Upload the contents of `hf-space/`; do not replace an existing AI Space. Hugging Face's current docs say creating a compute-based Docker Space on a personal account may require a paid plan, even though CPU Basic hardware itself has no hourly charge. Check what your account offers before creating it. If the account blocks new compute Spaces, this bundle is ready but the worker will not be live until it is deployed to an available backend. Add these Space variables/secrets in the Space settings:
 
 - Secret `FIREBASE_SERVICE_ACCOUNT_JSON`: the full JSON contents of a service-account key created for the Firebase project. Keep it out of GitHub and do not paste it in the browser.
-- Variable `ADMIN_UID`: the Firebase Authentication UID copied from Settings in the web app. The worker rejects requests from any other account.
+- Optional variable `ADMIN_UID`: pin one Firebase Authentication UID. The two verified administrator emails above are also authorized by default; set `ADMIN_EMAILS` only if you want to replace that allowlist.
 - Variable `ALLOWED_ORIGINS`: `https://fugthmanagement.github.io` (optionally add `http://localhost:8000` during local testing).
+- Secret `WORKER_WAKE_TOKEN`: a long random token shared with the GitHub Actions repository secret of the same name.
 - Optional secret `BRAVE_SEARCH_API_KEY`: enables the external web-search route. Without it, the worker checks supplied URLs only.
 - Optional variable `OVERPASS_URL`: an alternate OpenStreetMap Overpass API endpoint.
 
-The worker verifies Firebase ID tokens and rejects every UID except `ADMIN_UID`. Firestore Admin SDK writes bypass client Security Rules, so protect the service account and keep the UID check in place. Once the Space is built, put its base `https://…hf.space` URL in the app's Settings and use **Check status**.
+The worker verifies Firebase ID tokens and only accepts the configured administrator emails or UIDs. The admin dashboard uses the worker's Firebase Admin SDK to list accounts and update rank claims; only protected admin identities can call those endpoints. Firestore Admin SDK writes bypass client Security Rules, so keep the service-account key out of the repository and protect the admin allowlist. Once the Space is built, put its base `https://…hf.space` URL in the app's Settings and use **Check status**.
 
 ### Background-job behavior
 
-Jobs are recorded in Firestore before the browser asks the worker to start. Once the worker accepts a job, it runs independently of the browser page; closing Safari, Chrome, or the tab does not cancel it. The worker also polls Firestore to resume queued or interrupted work after it restarts. CPU Basic Spaces sleep after 48 hours of inactivity; a sleeping Space cannot make progress until it wakes, but the saved job remains in Firestore and resumes when the worker starts again. Choose an always-on worker plan if uninterrupted processing is required.
+Jobs are recorded in Firestore before the browser asks the worker to start. Once the worker accepts a job, it runs independently of the browser page; closing Safari, Chrome, or the tab does not cancel it. The worker also polls Firestore to resume queued or interrupted work after it restarts. CPU Basic Spaces sleep after 48 hours of inactivity; a sleeping Space cannot make progress until it wakes, but the saved job remains in Firestore and resumes when the worker starts again.
+
+The Admin dashboard can set a 15-minute to 6-hour interval for checking saved jobs. To wake a sleeping Space from outside its own process, add GitHub repository **Actions secrets** `HF_WORKER_URL` and `WORKER_WAKE_TOKEN`, then add the same `WORKER_WAKE_TOKEN` as a secret in the Hugging Face Space. `.github/workflows/wake-worker.yml` calls the worker every 15 minutes; the saved interval decides whether it should start due jobs. This resumes jobs already queued in Firestore. Turn on **Automatically start lookups after importing** to create queue jobs as soon as leads are imported or saved from Local Discovery. The setting is on by default. The wake workflow sends a request every 15 minutes when both GitHub secrets are configured, including while the saved worker schedule is off; disable the workflow or remove its secrets to stop those requests.
 
 ## 4. Sources and quality controls
 
-Supply a website and/or one or more public source URLs in the prospect CSV/JSON or manual form. PDF URLs are extracted in memory, then discarded. `BRAVE_SEARCH_API_KEY` enables a search route, but results remain unverified and are tagged for review. The service limits page size, redirect count, number of sources, and crawl depth. It does not access pages requiring login, bypass anti-bot controls, or crawl Google Maps.
+Supply a website and/or one or more public source URLs in the prospect CSV/JSON or manual form. PDF URLs are extracted in memory, then discarded. `BRAVE_SEARCH_API_KEY` enables searching for source pages from a business name and location; results remain unverified and are tagged for review. Without that secret or a supplied URL, the worker cannot reliably discover a non-Florida business website from a name alone. The service limits page size, redirect count, number of sources, and crawl depth. It does not access pages requiring login, bypass anti-bot controls, execute remote JavaScript, or crawl Google Maps.
 
 No public source means `Not found` or `Failed`; the worker will not manufacture an address. A found email is evidence that the string appeared in a source, not proof that the mailbox exists, belongs to the owner, or is safe to contact. Use the feedback buttons to record whether the candidate is correct, wrong, or stale and rate evidence quality. Future runs use route-level feedback to adjust the evidence score, gradually and within a small bounded range. An email marked wrong for the same business is suppressed on later runs. The score remains a review rubric, not a probability, and a reviewer should still verify important contacts.
 
@@ -76,7 +80,7 @@ The Chrome extension source is in `extension/`. On desktop Chrome:
 4. Open a public business website, click the extension, review the visible contact details, and download JSON.
 5. In the workspace, choose **Browser companion → Import capture JSON**.
 
-The extension does not run on iPhone or Android. Use the responsive web app there. It only reads the active page after a click; it is not a bulk crawler and it blocks Google Maps pages.
+The extension does not run on iPhone or Android. Use the responsive web app there. It captures one selected tab after a click and requests access per site; it is not a bulk crawler and blocks Google Maps pages. The app opens Maps search links for manual review but does not copy listings into the prospect database. Google Maps Platform terms prohibit scraping and copying business listing content; see the [official terms](https://cloud.google.com/maps-platform/terms).
 
 ## 6. Google Drive project folder
 

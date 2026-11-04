@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 import socket
 from dataclasses import dataclass, field
@@ -27,6 +28,118 @@ class FetchResult:
     is_pdf: bool
     error: str = ""
     links: list[dict] = field(default_factory=list)
+    profile: dict = field(default_factory=dict)
+
+
+def _plain(value: object, limit: int = 500) -> str:
+    if isinstance(value, (str, int, float)):
+        return re.sub(r"\s+", " ", str(value)).strip()[:limit]
+    return ""
+
+
+def _jsonld_objects(value: object) -> list[dict]:
+    if isinstance(value, list):
+        return [item for part in value for item in _jsonld_objects(part)]
+    if not isinstance(value, dict):
+        return []
+    found = [value]
+    graph = value.get("@graph")
+    if graph is not None:
+        found.extend(_jsonld_objects(graph))
+    return found
+
+
+def _profile_from_html(soup: BeautifulSoup, current_url: str) -> dict:
+    """Read explicit page metadata and Schema.org JSON-LD; never execute page scripts."""
+    profile: dict = {}
+    structured_objects: list[dict] = []
+    for script in soup.select('script[type="application/ld+json"]')[:20]:
+        try:
+            structured_objects.extend(_jsonld_objects(json.loads(script.get_text(" ", strip=True))))
+        except (ValueError, TypeError):
+            continue
+
+    selected = next((obj for obj in structured_objects if any(
+        kind in " ".join(obj.get("@type", []) if isinstance(obj.get("@type"), list) else [str(obj.get("@type", ""))]).casefold()
+        for kind in ("organization", "localbusiness", "store", "professionalservice", "medicalbusiness", "automotivebusiness")
+    )), {})
+    if not selected and structured_objects:
+        selected = structured_objects[0]
+
+    for key, source, cap in (
+        ("businessName", selected.get("name"), 160),
+        ("phone", selected.get("telephone"), 80),
+        ("email", selected.get("email"), 254),
+        ("description", selected.get("description"), 500),
+        ("hours", selected.get("openingHours"), 300),
+        ("priceRange", selected.get("priceRange"), 80),
+        ("services", selected.get("serviceType") or selected.get("knowsAbout"), 250),
+    ):
+        if isinstance(source, list):
+            source = ", ".join(_plain(item, 80) for item in source if _plain(item, 80))
+        value = _plain(source, cap)
+        if value:
+            profile[key] = value
+
+    address = selected.get("address")
+    if isinstance(address, dict):
+        parts = [address.get(key) for key in ("streetAddress", "addressLocality", "addressRegion", "postalCode", "addressCountry") if _plain(address.get(key), 120)]
+        if parts:
+            profile["address"] = ", ".join(_plain(part, 120) for part in parts)[:300]
+        for key, schema_key, cap in (("city", "addressLocality", 100), ("state", "addressRegion", 50), ("postalCode", "postalCode", 20)):
+            value = _plain(address.get(schema_key), cap)
+            if value:
+                profile[key] = value
+    hours_spec = selected.get("openingHoursSpecification")
+    if hours_spec and "hours" not in profile:
+        rows = hours_spec if isinstance(hours_spec, list) else [hours_spec]
+        hours = []
+        for row in rows[:7]:
+            if not isinstance(row, dict):
+                continue
+            days = row.get("dayOfWeek", [])
+            if isinstance(days, str):
+                days = [days]
+            day_names = ",".join(_plain(item, 24).rsplit("/", 1)[-1] for item in days[:7])
+            opening = _plain(row.get("opens"), 10)
+            closing = _plain(row.get("closes"), 10)
+            if day_names and opening and closing:
+                hours.append(f"{day_names} {opening}-{closing}")
+        if hours:
+            profile["hours"] = "; ".join(hours)[:300]
+
+    same_as = selected.get("sameAs", [])
+    if isinstance(same_as, str):
+        same_as = [same_as]
+    social_urls = []
+    for item in same_as[:12] if isinstance(same_as, list) else []:
+        value = _plain(item, 2048)
+        if value.startswith(("https://", "http://")) and value not in social_urls:
+            social_urls.append(value)
+    if social_urls:
+        profile["socialUrls"] = social_urls[:8]
+
+    metadata = {
+        "website": (soup.select_one('link[rel="canonical"]') or {}).get("href", "") or current_url,
+        "description": "",
+    }
+    for name in ("description", "og:description"):
+        tag = soup.find("meta", attrs={"name": name}) or soup.find("meta", attrs={"property": name})
+        if tag and tag.get("content"):
+            metadata["description"] = tag.get("content", "")
+            break
+    if not profile.get("description") and metadata["description"]:
+        profile["description"] = _plain(metadata["description"], 500)
+    if metadata["website"].startswith(("http://", "https://")):
+        profile["website"] = metadata["website"][:2048]
+    tel = next((anchor.get("href", "")[4:] for anchor in soup.select('a[href^="tel:"]') if anchor.get("href")), "")
+    if tel and not profile.get("phone"):
+        profile["phone"] = _plain(tel, 80)
+
+    if structured_objects:
+        evidence = json.dumps(selected, ensure_ascii=False, separators=(",", ":"))
+        profile["structuredEvidenceText"] = evidence[:500]
+    return {key: value for key, value in profile.items() if value not in ("", [], None)}
 
 
 def _public_url(url: str) -> bool:
@@ -96,16 +209,21 @@ async def fetch_public(url: str) -> FetchResult:
                     if not any(kind in content_type for kind in ("text/html", "text/plain", "application/xhtml")):
                         return FetchResult(current, "", False, "Source is not a readable HTML, text, or PDF page.")
                     soup = BeautifulSoup(data, "html.parser")
+                    profile = _profile_from_html(soup, current)
                     for node in soup(["script", "style", "noscript", "svg", "template"]):
                         node.decompose()
                     visible = soup.get_text(" ", strip=True)
                     emails_from_links = [a.get("href", "")[7:] for a in soup.select('a[href^="mailto:"]')]
-                    text = (visible + "\n" + "\n".join(emails_from_links))[:MAX_TEXT_CHARS]
+                    profile_text = "\n".join(
+                        _plain(value, 500) if not isinstance(value, list) else "\n".join(_plain(item, 2048) for item in value)
+                        for value in profile.values()
+                    )
+                    text = (visible + "\n" + "\n".join(emails_from_links) + "\n" + profile_text)[:MAX_TEXT_CHARS]
                     links = [
                         {"url": urljoin(current, anchor.get("href", "")), "text": anchor.get_text(" ", strip=True)[:180]}
                         for anchor in soup.select("a[href]")[:300]
                     ]
-                    return FetchResult(current, text, False, links=links)
+                    return FetchResult(current, text, False, links=links, profile=profile)
             return FetchResult(current, "", False, "Too many redirects.")
     except (httpx.HTTPError, ValueError, OSError) as exc:
         return FetchResult(current, "", False, f"Fetch failed: {type(exc).__name__}.")
@@ -253,7 +371,7 @@ async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str]]:
     return candidates, errors[:5]
 
 
-async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[list[dict], list[str]]:
+async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[list[dict], list[str], list[dict]]:
     name = str(prospect.get("businessName", ""))[:160]
     state = re.sub(r"[^A-Z]", "", str(prospect.get("state", "")).upper())
     urls: list[tuple[str, str]] = []
@@ -281,13 +399,14 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
 
     candidates: list[dict] = []
     route_errors: list[str] = []
+    profiles: list[dict] = []
     if state in {"FL", "FLORIDA"}:
         sunbiz_candidates, sunbiz_errors = await _sunbiz_lookup(name)
         candidates.extend(sunbiz_candidates)
         route_errors.extend(sunbiz_errors)
 
     if not unique_urls and state not in {"FL", "FLORIDA"}:
-        return [], ["No public source URL was provided and optional web search is not configured."]
+        return [], ["No public source URL was provided and optional web search is not configured."], []
     for url, route in unique_urls:
         try:
             async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as robot_client:
@@ -302,6 +421,13 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
             route_errors.append(f"{url}: {result.error}")
             continue
         candidates.extend(_extract(result, route, name))
+        if result.profile:
+            profiles.append({
+                "sourceRoute": route,
+                "sourceUrl": result.url,
+                "profile": result.profile,
+                "evidenceText": result.profile.get("structuredEvidenceText") or result.text[:500],
+            })
 
         # Discover a few same-site Contact/About pages using parsed links from the source page.
         # For privacy and request caps, only pages whose visible link text/path signals Contact/About are followed.
@@ -326,6 +452,13 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
                     route_errors.append(f"{contact_url}: {contact.error}")
                 else:
                     candidates.extend(_extract(contact, "same_site_contact_page", name))
+                    if contact.profile:
+                        profiles.append({
+                            "sourceRoute": "same_site_contact_page",
+                            "sourceUrl": contact.url,
+                            "profile": contact.profile,
+                            "evidenceText": contact.profile.get("structuredEvidenceText") or contact.text[:500],
+                        })
 
     # Stable deduplication keeps the same email from duplicating across routes.
     unique_candidates: list[dict] = []
@@ -335,4 +468,4 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
         if key not in seen_candidates:
             seen_candidates.add(key)
             unique_candidates.append(item)
-    return unique_candidates[:20], route_errors[:10]
+    return unique_candidates[:20], route_errors[:10], profiles[:12]

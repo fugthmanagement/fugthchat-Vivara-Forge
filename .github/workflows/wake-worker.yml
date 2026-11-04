@@ -1,0 +1,29 @@
+name: Scheduled worker wake
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  wake:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wake the worker and resume due queued jobs
+        shell: bash
+        env:
+          HF_WORKER_URL: ${{ secrets.HF_WORKER_URL }}
+          WORKER_WAKE_TOKEN: ${{ secrets.WORKER_WAKE_TOKEN }}
+        run: |
+          if [[ -z "$HF_WORKER_URL" || -z "$WORKER_WAKE_TOKEN" ]]; then
+            echo "Add HF_WORKER_URL and WORKER_WAKE_TOKEN repository secrets to enable scheduled wakes."
+            exit 0
+          fi
+          worker_url="${HF_WORKER_URL%/}"
+          curl --silent --show-error --fail \
+            --retry 9 --retry-all-errors --retry-delay 30 --max-time 60 \
+            -X POST "$worker_url/api/scheduled-wake" \
+            -H "X-Worker-Wake-Token: $WORKER_WAKE_TOKEN"

@@ -50,6 +50,7 @@
         <button class="nav-item" data-view="local"><span>⌖</span>Local discovery</button>
         <button class="nav-item" data-view="jobs"><span>◷</span>Enrichment queue</button>
         <button class="nav-item" data-view="companion"><span>↗</span>Browser companion</button>
+        <button id="adminNav" class="nav-item hidden" data-view="admin"><span>♙</span>Admin</button>
         <button class="nav-item" data-view="settings"><span>⚙</span>Settings</button>
       </nav>
       <div class="sidebar-bottom">
@@ -106,16 +107,19 @@
         </div>
         <div class="toolbar">
           <div class="search-box"><span>⌕</span><input id="leadSearch" type="search" placeholder="Search business, city, phone, or email"></div>
+          <select id="categoryFilter" aria-label="Filter by business niche"><option value="">All niches</option></select>
+          <select id="websiteFilter" aria-label="Filter by website"><option value="">Any website status</option><option value="has">Has website</option><option value="none">No website</option></select>
           <select id="statusFilter" aria-label="Filter by status"><option value="">All statuses</option><option value="new">New</option><option value="queued">Queued</option><option value="running">Searching</option><option value="found">Email found</option><option value="needs_review">Needs review</option><option value="not_found">Not found</option><option value="failed">Failed</option></select>
           <button id="queueSelected" class="button primary">Queue selected <span>→</span></button>
         </div>
+        <label class="auto-queue-control"><input id="autoQueueImports" type="checkbox"> Automatically start lookups after importing or saving a local result</label>
         <div class="table-wrap">
           <table class="lead-table">
             <thead><tr><th><input id="selectAll" type="checkbox" aria-label="Select all"></th><th>Business</th><th>Location</th><th>Contact</th><th>Status</th><th>Evidence</th><th></th></tr></thead>
             <tbody id="leadRows"><tr><td colspan="7" class="empty-state">Sign in to load prospects.</td></tr></tbody>
           </table>
         </div>
-        <div class="empty-help" id="emptyLeads"><div class="empty-illustration">◎</div><b>Your list starts here</b><p>Import CSV/JSON or add one prospect. Nothing is sent until you queue it.</p><button class="button secondary" id="showAddForm">Add a prospect</button></div>
+        <div class="empty-help" id="emptyLeads"><div class="empty-illustration">◎</div><b>Your list starts here</b><p>Import CSV/JSON or add one prospect. Automatic lookup is enabled by default and can be turned off above.</p><button class="button secondary" id="showAddForm">Add a prospect</button></div>
         <form id="addProspectForm" class="form-card hidden">
           <div class="section-heading compact"><div><p class="eyebrow">MANUAL ENTRY</p><h2>Add a prospect</h2></div><button type="button" id="closeAddForm" class="icon-button" aria-label="Close">×</button></div>
           <div class="form-grid">
@@ -139,9 +143,11 @@
           <div class="local-map-art" aria-hidden="true"><div class="map-grid"></div><div class="map-pin">⌖</div><span class="map-label label-one">LOCAL DATA</span><span class="map-label label-two">SOURCE TAGGED</span></div>
           <div class="local-search-form">
             <div class="form-grid">
-              <label>Business type<select id="localCategory"><option value="all">All local businesses</option><option value="mechanic">Auto repair</option><option value="contractor">Contractors and trades</option><option value="restaurant">Restaurants</option><option value="beauty">Beauty and personal care</option><option value="health">Health services</option><option value="retail">Retail shops</option></select></label>
+              <label>Business niche<select id="localCategory"><option value="all">All local businesses</option><option value="mechanic">Auto repair</option><option value="tire_shop">Tire shops</option><option value="auto_detail">Auto detailing</option><option value="contractor">General contractors</option><option value="plumber">Plumbers</option><option value="electrician">Electricians</option><option value="hvac">HVAC</option><option value="roofer">Roofers</option><option value="restaurant">Restaurants</option><option value="nail_salon">Nail salons</option><option value="beauty">Beauty and personal care</option><option value="health">Health services</option><option value="dentist">Dentists</option><option value="retail">Retail shops</option><option value="real_estate">Real estate offices</option><option value="cleaning">Cleaning services</option><option value="fitness">Fitness centers</option><option value="daycare">Childcare</option></select></label>
               <label>Search radius<select id="localRadius"><option value="2000">2 km</option><option value="5000" selected>5 km</option><option value="10000">10 km</option></select></label>
             </div>
+            <label>Google Maps search phrase<input id="mapsSearchTerm" maxlength="120" placeholder="Optional: tire shops, nail salons, HVAC"></label>
+            <label>Show businesses<select id="localWebsiteFilter"><option value="">Any website status</option><option value="has">Has website</option><option value="none">No website</option></select></label>
             <div class="location-row"><button id="useLocation" class="button secondary">⌖ Use my location</button><span id="locationLabel" class="muted">Location is only used after you tap the button.</span></div>
             <div class="form-actions left"><button id="runLocalSearch" class="button primary" disabled>Search open data</button><a id="openMaps" class="button quiet disabled-link" href="#" target="_blank" rel="noopener">Open Google Maps search ↗</a></div>
             <p class="fine-print">Local results use <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap contributors</a>. Google Maps opens as a separate search; this tool does not copy or crawl Maps listings.</p>
@@ -171,7 +177,7 @@
         <div class="page-heading"><div><p class="eyebrow">DESKTOP HELPER</p><h1>Browser companion</h1><p class="muted">A private unpacked Chrome extension for capturing a public business page you open yourself.</p></div></div>
         <div class="companion-layout">
           <article class="form-card install-card"><span class="large-symbol">⌘</span><p class="eyebrow">LOCAL INSTALL · DESKTOP CHROME</p><h2>Capture one page at a time</h2><p>The companion can extract visible contact details from a public business website after you click Capture. It exports a JSON file you can import here.</p><ol><li>Download or clone this GitHub repository on your computer.</li><li>Open <b>chrome://extensions</b> and turn on Developer mode.</li><li>Select <b>Load unpacked</b> and choose the <code>extension</code> folder.</li><li>Open a public business website and click the extension to review/export the capture.</li></ol><div class="form-actions left"><a class="button secondary" href="https://github.com/fugthmanagement/fugthchat-Vivara-Forge/tree/main/extension" target="_blank" rel="noopener">Open extension files ↗</a><button id="extensionImportTrigger" class="button quiet" type="button">Import capture JSON</button></div></article>
-          <article class="form-card terms-card"><span class="large-symbol blue-symbol">⌖</span><p class="eyebrow">MAPS SEARCH</p><h2>Google Maps opens; its listings stay there</h2><p>Google’s terms prohibit scraping and copying Maps business listings into another database. The companion will block extraction on Maps pages. Use the local open-data route here, or a properly licensed API for other data.</p><button class="button quiet" data-goto="local">Go to Local Discovery →</button></article>
+          <article class="form-card terms-card"><span class="large-symbol blue-symbol">⌖</span><p class="eyebrow">MAPS SEARCH</p><h2>Google Maps opens; its listings stay there</h2><p>Google’s <a href="https://cloud.google.com/maps-platform/terms" target="_blank" rel="noopener">current Maps terms</a> prohibit copying business names, addresses, or reviews from Maps into another database. The companion blocks capture on Maps pages. Use the local open-data route here, or a properly licensed API for other data.</p><button class="button quiet" data-goto="local">Go to Local Discovery →</button></article>
         </div>
         <div class="callout"><span class="callout-icon">i</span><p>On iPhone and Android, use the web workspace. The unpacked Chrome extension is for desktop Chrome only.</p></div>
       </section>
@@ -180,7 +186,7 @@
         <div class="page-heading"><div><p class="eyebrow">CONNECTIONS</p><h1>Settings</h1><p class="muted">The browser app uses Firebase for sign-in and stored prospect data.</p></div></div>
         <div class="settings-grid">
           <article class="form-card">
-            <p class="eyebrow">BACKGROUND WORKER</p><h2>Hugging Face endpoint</h2><p class="muted">Paste the base URL after the separate Docker Space is deployed. Never paste a token or service-account key here.</p>
+            <p class="eyebrow">BACKGROUND WORKER</p><h2>Hugging Face endpoint</h2><p class="muted">Paste the base URL after the separate Docker Space is deployed. Never paste a token or service-account key here. To search for a site from just a business name and city, configure the worker's optional <code>BRAVE_SEARCH_API_KEY</code> secret. Without it, lookup uses supplied websites/source URLs and Florida registry records.</p>
             <label>Worker URL<input id="backendUrl" type="url" placeholder="https://your-space.hf.space"></label>
             <div class="form-actions left"><button id="saveBackend" class="button primary">Save endpoint</button><button id="checkBackend" class="button quiet">Check status</button></div>
             <p id="backendMessage" class="notice" role="status"></p>
@@ -189,14 +195,30 @@
             <p class="eyebrow">FIREBASE MEMORY</p><h2>Project connection</h2><div class="connection-row"><span class="connection-dot" id="connectionDot"></span><div><b id="connectionText">Waiting for sign-in</b><small>Project: vivara-forge · Firestore</small></div></div>
             <label class="uid-label">Signed-in account UID<input id="adminUid" type="text" readonly aria-label="Signed-in account UID" placeholder="Sign in to show your UID"></label>
             <div class="form-actions left"><button id="copyAdminUid" class="button secondary" type="button" disabled>Copy UID for worker</button></div>
-            <p class="fine-print">Set this value as <code>ADMIN_UID</code> in the Hugging Face Space settings. Only this account can start background lookups.</p>
-            <p class="muted">Firestore Rules are included in the repository. Deploy them only after reviewing the schema and confirming your Auth sign-in provider.</p>
-            <a class="inline-link" href="https://console.firebase.google.com/project/vivara-forge/firestore" target="_blank" rel="noopener">Open Firestore console ↗</a>
+            <p class="fine-print">The worker accepts the two verified admin emails in the code by default. Set this value as <code>ADMIN_UID</code> only if you want to pin a Space to one account.</p>
+            <div id="adminVerifyPanel" class="callout warning hidden"><span class="callout-icon">!</span><div><b>Verify this admin email</b><p>Admin access is granted to the two configured addresses after Firebase verifies the email.</p><div class="form-actions left"><button id="resendVerification" class="button secondary" type="button">Resend verification email</button><button id="refreshVerification" class="button quiet" type="button">I verified it</button></div><p id="verificationMessage" class="notice"></p></div></div>
+            <p class="muted">If importing reports insufficient permissions, deploy this repository's Firestore Rules to <code>vivara-forge</code>. The current rules scope each account to its own records.</p>
+            <div class="form-actions left"><a class="inline-link" href="https://console.firebase.google.com/project/vivara-forge/firestore/rules" target="_blank" rel="noopener">Open Firestore Rules ↗</a><a class="inline-link" href="https://github.com/fugthmanagement/fugthchat-Vivara-Forge/blob/main/firestore.rules" target="_blank" rel="noopener">View rules to publish ↗</a></div>
           </article>
           <article class="form-card full-span">
             <p class="eyebrow">DATA HANDLING</p><h2>Raw documents are temporary</h2><p class="muted">The worker parses fetched PDFs in memory, keeps the source URL and relevant text evidence, and discards the PDF bytes. Candidate emails are never generated from guessed name patterns. An email found in a filing is labeled as a filing contact and requires review.</p>
           </article>
         </div>
+      </section>
+
+      <section id="view-admin" class="view">
+        <div class="page-heading"><div><p class="eyebrow">OWNER CONTROLS</p><h1>Admin dashboard</h1><p class="muted">Review registered accounts, their latest sign-in, and their assigned rank.</p></div><button id="refreshAdminAccounts" class="button secondary" type="button">Refresh accounts</button></div>
+        <div class="admin-summary"><article class="metric-card"><span class="metric-icon blue">♙</span><div><small>Registered accounts</small><strong id="adminAccountCount">—</strong></div><span class="metric-note">Firebase Authentication</span></article><span id="adminStatus" class="status-pill"><i></i>Connect worker</span></div>
+        <div class="form-card admin-accounts-card"><div class="section-heading compact"><div><p class="eyebrow">ACCOUNT DIRECTORY</p><h2>Accounts &amp; ranks</h2></div><input id="adminAccountSearch" type="search" placeholder="Filter email or name" aria-label="Filter accounts"></div>
+          <div class="table-wrap"><table class="lead-table admin-table"><thead><tr><th>Account</th><th>Last sign-in</th><th>Verification</th><th>Rank</th><th></th></tr></thead><tbody id="adminAccountRows"><tr><td colspan="5" class="empty-state">Connect the worker to load accounts.</td></tr></tbody></table></div>
+          <p id="adminAccountsMessage" class="notice" role="status"></p>
+        </div>
+        <div class="form-card schedule-card"><p class="eyebrow">BACKGROUND WAKE SCHEDULE</p><h2>Wake the worker on a timer</h2><p class="muted">The timer checks for jobs you already queued and resumes them. It does not invent or import new prospects. The repository's scheduled workflow must also be configured to ping the worker.</p>
+          <div class="schedule-controls"><label>Check for saved jobs<select id="wakeInterval"><option value="0">Off</option><option value="15">Every 15 minutes</option><option value="30">Every 30 minutes</option><option value="60">Every hour</option><option value="180">Every 3 hours</option><option value="360">Every 6 hours</option></select></label><button id="saveWakeSchedule" class="button primary" type="button">Save schedule</button></div>
+          <p id="wakeScheduleMessage" class="fine-print">Schedule is off.</p>
+          <p class="fine-print">To allow a sleeping Space to wake, add GitHub Actions secrets <code>HF_WORKER_URL</code> and <code>WORKER_WAKE_TOKEN</code>, and set the same <code>WORKER_WAKE_TOKEN</code> secret in the worker.</p>
+        </div>
+        <div class="callout"><span class="callout-icon">i</span><p>The account list shows registration and latest Firebase sign-in timestamps; Firebase does not provide a reliable “currently online” list. The two configured admin emails cannot be demoted here.</p></div>
       </section>
 
       <footer class="footer"><span>Vivara Forge · Evidence-based prospect research</span><span>GitHub Pages · Firebase-backed</span></footer>

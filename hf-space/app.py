@@ -6,8 +6,12 @@ import json
 import logging
 import os
 import re
+import secrets
+import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlencode
 
 import firebase_admin
 import httpx
@@ -24,12 +28,25 @@ log = logging.getLogger("vivara-worker")
 
 PROJECT_ID = "vivara-forge"
 ADMIN_UID = os.getenv("ADMIN_UID", "").strip()
+ADMIN_UIDS = {item.strip() for item in os.getenv("ADMIN_UIDS", "").split(",") if item.strip()}
+if ADMIN_UID:
+    ADMIN_UIDS.add(ADMIN_UID)
+DEFAULT_ADMIN_EMAILS = {"fugthchat@gmail.com", "fugthmanagement@gmail.com"}
+ADMIN_EMAILS = {
+    item.strip().lower()
+    for item in os.getenv("ADMIN_EMAILS", ",".join(sorted(DEFAULT_ADMIN_EMAILS))).split(",")
+    if item.strip()
+}
+WORKER_WAKE_TOKEN = os.getenv("WORKER_WAKE_TOKEN", "").strip()
 ORIGINS = [item.strip().rstrip("/") for item in os.getenv("ALLOWED_ORIGINS", "https://fugthmanagement.github.io").split(",") if item.strip()]
 OVERPASS_URL = os.getenv("OVERPASS_URL", "https://overpass-api.de/api/interpreter").strip()
 SEARCH_KEY = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
 db = None
 firebase_ready = False
 active_jobs: dict[str, asyncio.Task] = {}
+scheduled_wake_lock = asyncio.Lock()
+admin_uid_cache: list[str] | None = None
+admin_uid_cache_expires = 0.0
 
 
 def init_firebase() -> None:
@@ -53,18 +70,25 @@ def init_firebase() -> None:
         firebase_ready = False
 
 
+def _is_admin_identity(decoded: dict[str, Any]) -> bool:
+    uid = str(decoded.get("uid", ""))
+    email = str(decoded.get("email", "")).strip().lower()
+    email_verified = decoded.get("email_verified") is True
+    return uid in ADMIN_UIDS or (email_verified and email in ADMIN_EMAILS)
+
+
 def require_admin(authorization: str | None) -> dict[str, Any]:
     if not firebase_ready or db is None:
         raise HTTPException(status_code=503, detail="Worker credentials are not configured.")
-    if not ADMIN_UID:
-        raise HTTPException(status_code=503, detail="ADMIN_UID is not configured.")
+    if not ADMIN_UIDS and not ADMIN_EMAILS:
+        raise HTTPException(status_code=503, detail="No administrator accounts are configured.")
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="A Firebase sign-in token is required.")
     try:
         decoded = firebase_auth.verify_id_token(authorization.split(" ", 1)[1].strip(), check_revoked=True)
     except Exception:
         raise HTTPException(status_code=401, detail="Firebase sign-in token is invalid or expired.")
-    if decoded.get("uid") != ADMIN_UID:
+    if not _is_admin_identity(decoded):
         raise HTTPException(status_code=403, detail="This account is not allowed to use the private worker.")
     return decoded
 
@@ -78,6 +102,15 @@ class LocalSearchRequest(BaseModel):
     lon: float = Field(ge=-180, le=180)
     radius_m: int = Field(default=5000, ge=500, le=10000)
     category: str = Field(default="all", max_length=30)
+
+
+class RankRequest(BaseModel):
+    rank: str = Field(min_length=1, max_length=24)
+
+
+class WakeScheduleRequest(BaseModel):
+    enabled: bool
+    interval_minutes: int = Field(default=0, ge=0, le=360)
 
 
 def _job_ref(uid: str, job_id: str):
@@ -160,9 +193,26 @@ async def _process_job(uid: str, job_id: str) -> None:
                 continue
             await asyncio.to_thread(prospect_ref.update, {"status": "running", "updatedAt": firestore.SERVER_TIMESTAMP})
             try:
-                candidates, errors = await enrich_prospect(prospect, SEARCH_KEY)
+                candidates, errors, profiles = await enrich_prospect(prospect, SEARCH_KEY)
                 extracted_count = len(candidates)
                 candidates = _calibrate_candidates(candidates, feedback_docs, prospect)
+                for item in profiles:
+                    profile = {
+                        "candidateType": "business_profile",
+                        "prospectId": prospect_id,
+                        "businessName": prospect.get("businessName", ""),
+                        "sourceRoute": item.get("sourceRoute", "business_website"),
+                        "sourceUrl": item.get("sourceUrl", ""),
+                        "profile": item.get("profile", {}),
+                        "evidenceText": str(item.get("evidenceText", ""))[:500],
+                        "createdAt": firestore.SERVER_TIMESTAMP,
+                        "extractedAt": firestore.SERVER_TIMESTAMP,
+                    }
+                    profile_key = hashlib.sha256(
+                        f"{prospect_id}\nprofile\n{profile['sourceUrl']}".encode("utf-8")
+                    ).hexdigest()[:40]
+                    profile_ref = db.collection("users").document(uid).collection("candidates").document(profile_key)
+                    await asyncio.to_thread(profile_ref.set, profile)
                 if candidates:
                     for candidate in candidates:
                         candidate_doc = {
@@ -243,15 +293,57 @@ def _schedule_job(uid: str, job_id: str) -> bool:
     return True
 
 
+async def _authorized_admin_uids() -> list[str]:
+    global admin_uid_cache, admin_uid_cache_expires
+    now = time.monotonic()
+    if admin_uid_cache is not None and now < admin_uid_cache_expires:
+        return list(admin_uid_cache)
+    uids = set(ADMIN_UIDS)
+    for email in ADMIN_EMAILS:
+        try:
+            account = await asyncio.to_thread(firebase_auth.get_user_by_email, email)
+            if account.email_verified:
+                uids.add(account.uid)
+        except firebase_auth.UserNotFoundError:
+            continue
+        except Exception:
+            log.exception("Could not resolve an administrator account")
+    admin_uid_cache = sorted(uids)
+    admin_uid_cache_expires = now + 600
+    return list(admin_uid_cache)
+
+
+async def _start_saved_jobs() -> int:
+    started = 0
+    for uid in await _authorized_admin_uids():
+        jobs_ref = db.collection("users").document(uid).collection("jobs")
+        for status in ("queued", "running"):
+            docs = await asyncio.to_thread(
+                lambda s=status, ref=jobs_ref: list(ref.where(filter=FieldFilter("status", "==", s)).limit(20).stream())
+            )
+            for item in docs:
+                if _schedule_job(uid, item.id):
+                    started += 1
+    return started
+
+
+def _schedule_ref():
+    return db.collection("serviceConfig").document("workerWakeSchedule")
+
+
+def _iso_timestamp(value: Any) -> str | None:
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return None
+
+
 async def _resume_loop() -> None:
     while True:
         try:
-            if firebase_ready and ADMIN_UID:
-                jobs_ref = db.collection("users").document(ADMIN_UID).collection("jobs")
-                for status in ("queued", "running"):
-                    docs = await asyncio.to_thread(lambda s=status: list(jobs_ref.where(filter=FieldFilter("status", "==", s)).limit(20).stream()))
-                    for item in docs:
-                        _schedule_job(ADMIN_UID, item.id)
+            if firebase_ready and (ADMIN_UIDS or ADMIN_EMAILS):
+                await _start_saved_jobs()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -274,7 +366,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
 
@@ -286,7 +378,7 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "worker_ready": bool(firebase_ready and ADMIN_UID), "queue_runner": True}
+    return {"status": "ok", "worker_ready": bool(firebase_ready and (ADMIN_UIDS or ADMIN_EMAILS)), "queue_runner": True}
 
 
 @app.post("/api/wake")
@@ -305,14 +397,142 @@ async def wake(payload: WakeRequest, authorization: str | None = Header(default=
     return {"status": "running" if started else "already_running", "started": started}
 
 
+@app.get("/api/admin/accounts")
+async def admin_accounts(authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    try:
+        users = await asyncio.to_thread(lambda: list(firebase_auth.list_users(max_results=1000).iterate_all()))
+    except Exception as exc:
+        log.exception("Could not list Firebase accounts")
+        raise HTTPException(status_code=502, detail=f"Could not load accounts ({type(exc).__name__}).")
+
+    accounts = []
+    for account in users:
+        email = (account.email or "").strip().lower()
+        is_protected_admin = account.uid in ADMIN_UIDS or (account.email_verified and email in ADMIN_EMAILS)
+        claims = account.custom_claims or {}
+        rank = "admin" if is_protected_admin else claims.get("rank", "member")
+        if rank not in {"admin", "staff", "member", "viewer"}:
+            rank = "member"
+        metadata = account.user_metadata
+        accounts.append({
+            "uid": account.uid,
+            "email": account.email or "",
+            "displayName": account.display_name or "",
+            "emailVerified": bool(account.email_verified),
+            "disabled": bool(account.disabled),
+            "rank": rank,
+            "createdAt": _iso_timestamp(datetime.fromtimestamp(metadata.creation_timestamp / 1000, timezone.utc)) if metadata and metadata.creation_timestamp else None,
+            "lastSignInAt": _iso_timestamp(datetime.fromtimestamp(metadata.last_sign_in_timestamp / 1000, timezone.utc)) if metadata and metadata.last_sign_in_timestamp else None,
+        })
+    accounts.sort(key=lambda item: item["lastSignInAt"] or item["createdAt"] or "", reverse=True)
+    return {"accounts": accounts, "count": len(accounts)}
+
+
+@app.put("/api/admin/accounts/{uid}/rank")
+async def set_account_rank(uid: str, payload: RankRequest, authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", uid):
+        raise HTTPException(status_code=400, detail="Account ID is malformed.")
+    if payload.rank not in {"admin", "staff", "member", "viewer"}:
+        raise HTTPException(status_code=400, detail="Choose admin, staff, member, or viewer.")
+    try:
+        target = await asyncio.to_thread(firebase_auth.get_user, uid)
+    except firebase_auth.UserNotFoundError:
+        raise HTTPException(status_code=404, detail="Account was not found.")
+    except Exception as exc:
+        log.exception("Could not load account for rank update")
+        raise HTTPException(status_code=502, detail=f"Could not update account ({type(exc).__name__}).")
+
+    protected = target.uid in ADMIN_UIDS or (target.email_verified and (target.email or "").lower() in ADMIN_EMAILS)
+    if protected and payload.rank != "admin":
+        raise HTTPException(status_code=400, detail="The two configured administrator accounts cannot be demoted here.")
+    if payload.rank == "admin" and not protected:
+        raise HTTPException(status_code=403, detail="Only the configured administrator emails can have the admin rank.")
+    claims = dict(target.custom_claims or {})
+    claims["rank"] = payload.rank
+    await asyncio.to_thread(firebase_auth.set_custom_user_claims, uid, claims)
+    return {"uid": uid, "rank": payload.rank, "updated": True}
+
+
+@app.get("/api/admin/wake-schedule")
+async def get_wake_schedule(authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    snapshot = await asyncio.to_thread(_schedule_ref().get)
+    data = snapshot.to_dict() if snapshot.exists else {}
+    return {
+        "enabled": bool(data.get("enabled", False)),
+        "intervalMinutes": int(data.get("intervalMinutes", 0) or 0),
+        "nextRunAt": _iso_timestamp(data.get("nextRunAt")),
+        "lastTriggeredAt": _iso_timestamp(data.get("lastTriggeredAt")),
+    }
+
+
+@app.put("/api/admin/wake-schedule")
+async def save_wake_schedule(payload: WakeScheduleRequest, authorization: str | None = Header(default=None)):
+    require_admin(authorization)
+    allowed_intervals = {15, 30, 60, 180, 360}
+    if payload.enabled and payload.interval_minutes not in allowed_intervals:
+        raise HTTPException(status_code=400, detail="Choose a 15, 30, 60, 180, or 360 minute interval.")
+    now = datetime.now(timezone.utc)
+    enabled = payload.enabled and payload.interval_minutes in allowed_intervals
+    data = {
+        "enabled": enabled,
+        "intervalMinutes": payload.interval_minutes if enabled else 0,
+        "updatedAt": firestore.SERVER_TIMESTAMP,
+        "nextRunAt": now + timedelta(minutes=payload.interval_minutes) if enabled else None,
+    }
+    await asyncio.to_thread(_schedule_ref().set, data, merge=True)
+    return {"enabled": enabled, "intervalMinutes": data["intervalMinutes"], "nextRunAt": _iso_timestamp(data["nextRunAt"])}
+
+
+@app.post("/api/scheduled-wake")
+async def scheduled_wake(x_worker_wake_token: str | None = Header(default=None)):
+    if not WORKER_WAKE_TOKEN:
+        raise HTTPException(status_code=503, detail="Scheduled wake token is not configured.")
+    if not x_worker_wake_token or not secrets.compare_digest(x_worker_wake_token, WORKER_WAKE_TOKEN):
+        raise HTTPException(status_code=403, detail="Scheduled wake token is invalid.")
+    if not firebase_ready:
+        raise HTTPException(status_code=503, detail="Worker credentials are not configured.")
+    async with scheduled_wake_lock:
+        snapshot = await asyncio.to_thread(_schedule_ref().get)
+        settings = snapshot.to_dict() if snapshot.exists else {}
+        now = datetime.now(timezone.utc)
+        next_run = settings.get("nextRunAt")
+        if next_run and next_run.tzinfo is None:
+            next_run = next_run.replace(tzinfo=timezone.utc)
+        if not settings.get("enabled") or not next_run or next_run > now:
+            return {"status": "idle", "started": 0, "nextRunAt": _iso_timestamp(next_run)}
+        started = await _start_saved_jobs()
+        interval = int(settings.get("intervalMinutes", 0) or 0)
+        await asyncio.to_thread(_schedule_ref().update, {
+            "lastTriggeredAt": firestore.SERVER_TIMESTAMP,
+            "nextRunAt": now + timedelta(minutes=interval),
+            "updatedAt": firestore.SERVER_TIMESTAMP,
+        })
+        return {"status": "checked", "started": started, "nextRunAt": _iso_timestamp(now + timedelta(minutes=interval))}
+
+
 def _query_tags(category: str) -> list[tuple[str, str]]:
     mapping = {
         "mechanic": [("shop", "car_repair"), ("craft", "car_repair"), ("amenity", "car_repair")],
+        "tire_shop": [("shop", "tyres")],
+        "auto_detail": [("shop", "car_repair"), ("craft", "car_detailing")],
         "contractor": [("craft", "electrician|plumber|carpenter|roofer|builder|painter|hvac"), ("office", "construction")],
+        "plumber": [("craft", "plumber")],
+        "electrician": [("craft", "electrician")],
+        "hvac": [("craft", "hvac")],
+        "roofer": [("craft", "roofer")],
         "restaurant": [("amenity", "restaurant|cafe|fast_food|bar")],
         "beauty": [("shop", "hairdresser|beauty|barber"), ("amenity", "spa")],
+        "nail_salon": [("shop", "beauty"), ("beauty", "manicure")],
         "health": [("healthcare", ""), ("amenity", "clinic|pharmacy|doctors|dentist")],
+        "dentist": [("amenity", "dentist"), ("healthcare", "dentist")],
         "retail": [("shop", "")],
+        "real_estate": [("office", "estate_agent")],
+        "cleaning": [("craft", "cleaning")],
+        "fitness": [("leisure", "fitness_centre|sports_centre")],
+        "daycare": [("amenity", "childcare")],
         "all": [("shop", ""), ("craft", ""), ("office", ""), ("amenity", "restaurant|cafe|fast_food|bar|clinic|pharmacy|doctors|dentist")],
     }
     return mapping.get(category, mapping["all"])
@@ -358,8 +578,12 @@ async def local_search(payload: LocalSearchRequest, authorization: str | None = 
             "phone": tags.get("contact:phone") or tags.get("phone") or "",
             "website": tags.get("contact:website") or tags.get("website") or "",
             "email": tags.get("contact:email") or tags.get("email") or "",
+            "hours": tags.get("opening_hours") or "",
+            "postalCode": tags.get("addr:postcode") or "",
+            "socialUrls": [tags[key] for key in ("contact:facebook", "contact:instagram", "contact:linkedin") if tags.get(key)],
             "emailEvidence": "Email tag supplied on the OpenStreetMap source record." if tags.get("contact:email") or tags.get("email") else "",
             "sourceUrl": osm_url,
+            "googleMapsUrl": "https://www.google.com/maps/search/?" + urlencode({"api": "1", "query": " ".join(part for part in (name, ", ".join(address_parts), tags.get("addr:city", ""), tags.get("addr:state", "")) if part)}),
             "lat": location.get("lat"),
             "lon": location.get("lon"),
             "sourceRoute": "openstreetmap_overpass",

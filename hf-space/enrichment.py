@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import asyncio
 import ipaddress
 import re
 import socket
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
-from urllib.parse import urljoin, urlparse, urlunparse
+from urllib.parse import urlencode, urljoin, urlparse, urlunparse
 
 import httpx
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
-USER_AGENT = "VivaraForgeResearch/1.0 (+personal research; contact: admin)"
+USER_AGENT = "VivaraForgeResearch/1.0"
 EMAIL_RE = re.compile(r"(?<![\w.+-])[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+", re.I)
 MAX_BYTES = 2_500_000
 MAX_TEXT_CHARS = 500_000
@@ -27,6 +26,7 @@ class FetchResult:
     text: str
     is_pdf: bool
     error: str = ""
+    links: list[dict] = field(default_factory=list)
 
 
 def _public_url(url: str) -> bool:
@@ -101,7 +101,11 @@ async def fetch_public(url: str) -> FetchResult:
                     visible = soup.get_text(" ", strip=True)
                     emails_from_links = [a.get("href", "")[7:] for a in soup.select('a[href^="mailto:"]')]
                     text = (visible + "\n" + "\n".join(emails_from_links))[:MAX_TEXT_CHARS]
-                    return FetchResult(current, text, False)
+                    links = [
+                        {"url": urljoin(current, anchor.get("href", "")), "text": anchor.get_text(" ", strip=True)[:180]}
+                        for anchor in soup.select("a[href]")[:300]
+                    ]
+                    return FetchResult(current, text, False, links=links)
             return FetchResult(current, "", False, "Too many redirects.")
     except (httpx.HTTPError, ValueError, OSError) as exc:
         return FetchResult(current, "", False, f"Fetch failed: {type(exc).__name__}.")
@@ -136,12 +140,14 @@ def _extract(result: FetchResult, route: str, business_name: str) -> list[dict]:
                 "same_site_contact_page": "Business website contact page",
                 "provided_public_source": "Provided public source",
                 "optional_web_search": "Search result source",
+                "sunbiz_entity_record": "Florida Sunbiz entity record",
+                "sunbiz_pdf_filing": "Florida Sunbiz filing PDF",
             }.get(route, route),
             "sourceUrl": result.url,
             "evidenceText": excerpt,
             "confidenceScore": score,
             "domainCheckLabel": "MX not checked; mailbox not verified",
-            "requiresReview": result.is_pdf or route in {"provided_public_source", "optional_web_search"},
+            "requiresReview": result.is_pdf or route in {"provided_public_source", "optional_web_search", "sunbiz_entity_record", "sunbiz_pdf_filing"},
         })
     return candidates
 
@@ -182,8 +188,74 @@ async def _search_urls(name: str, city: str, state: str, api_key: str) -> list[s
         return []
 
 
+def _canonical_entity_name(value: str) -> str:
+    value = re.sub(r"[,\s]+(L\.?L\.?C\.?|INC(?:ORPORATED)?|CORP(?:ORATION)?|LTD|LIMITED|PLLC|L\.?P\.?|L\.?L\.?P\.?)\.?$", "", value.upper().strip())
+    return re.sub(r"[^A-Z0-9]+", "", value)
+
+
+async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str]]:
+    """Look up Florida entities conservatively, then read only exact-name filing sources."""
+    if len(name.strip()) < 3:
+        return [], ["Sunbiz search skipped because the business name is too short to match reliably."]
+    if len(name.strip()) > 45:
+        return [], ["Sunbiz search skipped because its name search accepts at most 45 characters."]
+    base = "https://search.sunbiz.org/Inquiry/CorporationSearch"
+    search_url = base + "/SearchResults?" + urlencode({"inquiryType": "EntityName", "searchTerm": name.strip()})
+    try:
+        async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as client:
+            if not await _robots_allows(search_url, client):
+                return [], ["Sunbiz search is disallowed by robots.txt or its robots file could not be checked."]
+        search_result = await fetch_public(search_url)
+    except httpx.HTTPError:
+        return [], ["Sunbiz search could not be reached."]
+    if search_result.error:
+        return [], [f"Sunbiz search: {search_result.error}"]
+
+    wanted = _canonical_entity_name(name)
+    matches = []
+    for item in search_result.links:
+        parsed = urlparse(item.get("url", ""))
+        if parsed.hostname != "search.sunbiz.org" or "/SearchResultDetail" not in parsed.path:
+            continue
+        entity_name = item.get("text", "").strip()
+        if entity_name and _canonical_entity_name(entity_name) == wanted:
+            matches.append((entity_name, item["url"]))
+    # Do not pick near-matches. Several exact legal entities may be returned, so retain their
+    # source identity and mark every filing-derived contact for a person to review.
+    matches = list(dict.fromkeys(matches))[:3]
+    candidates: list[dict] = []
+    errors: list[str] = []
+    for entity_name, detail_url in matches:
+        async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as client:
+            if not await _robots_allows(detail_url, client):
+                continue
+        detail = await fetch_public(detail_url)
+        if detail.error:
+            errors.append(f"Sunbiz entity record: {detail.error}")
+            continue
+        candidates.extend({**candidate, "registryEntityName": entity_name} for candidate in _extract(detail, "sunbiz_entity_record", name))
+        pdf_links = []
+        for link in detail.links:
+            url = link.get("url", "")
+            parts = urlparse(url)
+            if parts.hostname == "search.sunbiz.org" and ("ConvertTiffToPDF" in parts.path or parts.path.lower().endswith(".pdf")):
+                if url not in pdf_links:
+                    pdf_links.append(url)
+        for pdf_url in pdf_links[:3]:
+            async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as client:
+                if not await _robots_allows(pdf_url, client):
+                    continue
+            filing = await fetch_public(pdf_url)
+            if filing.error:
+                errors.append(f"Sunbiz filing PDF: {filing.error}")
+                continue
+            candidates.extend({**candidate, "registryEntityName": entity_name} for candidate in _extract(filing, "sunbiz_pdf_filing", name))
+    return candidates, errors[:5]
+
+
 async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[list[dict], list[str]]:
     name = str(prospect.get("businessName", ""))[:160]
+    state = re.sub(r"[^A-Z]", "", str(prospect.get("state", "")).upper())
     urls: list[tuple[str, str]] = []
     website = str(prospect.get("website", "")).strip()
     if website:
@@ -207,11 +279,15 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
         if len(unique_urls) >= 8:
             break
 
-    if not unique_urls:
-        return [], ["No public source URL was provided and optional web search is not configured."]
-
     candidates: list[dict] = []
     route_errors: list[str] = []
+    if state in {"FL", "FLORIDA"}:
+        sunbiz_candidates, sunbiz_errors = await _sunbiz_lookup(name)
+        candidates.extend(sunbiz_candidates)
+        route_errors.extend(sunbiz_errors)
+
+    if not unique_urls and state not in {"FL", "FLORIDA"}:
+        return [], ["No public source URL was provided and optional web search is not configured."]
     for url, route in unique_urls:
         try:
             async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as robot_client:
@@ -228,34 +304,28 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
         candidates.extend(_extract(result, route, name))
 
         # Discover a few same-site Contact/About pages using parsed links from the source page.
-        # For privacy and request caps, HTML links are fetched only when rel/contact paths are present.
+        # For privacy and request caps, only pages whose visible link text/path signals Contact/About are followed.
         if not result.is_pdf and route == "business_website":
-            try:
+            base = urlparse(result.url)
+            found_links = []
+            for link in result.links:
+                href = link.get("url", "")
+                parts = urlparse(href)
+                label = (link.get("text", "") + " " + parts.path).lower()
+                if parts.netloc.lower() == base.netloc.lower() and any(term in label for term in ("contact", "about", "team", "staff")):
+                    if _public_url(href) and href != result.url and href not in found_links:
+                        found_links.append(href)
+                if len(found_links) >= 3:
+                    break
+            for contact_url in found_links:
                 async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as client:
-                    response = await client.get(result.url, follow_redirects=False)
-                    if response.status_code == 200 and len(response.content) <= MAX_BYTES:
-                        soup = BeautifulSoup(response.content, "html.parser")
-                        base = urlparse(result.url)
-                        found_links = []
-                        for anchor in soup.select("a[href]"):
-                            href = urljoin(result.url, anchor.get("href", ""))
-                            parts = urlparse(href)
-                            label = (anchor.get_text(" ", strip=True) + " " + parts.path).lower()
-                            if parts.netloc.lower() == base.netloc.lower() and any(term in label for term in ("contact", "about", "team", "staff")):
-                                if _public_url(href) and href not in {result.url, *(item[0] for item in found_links)}:
-                                    found_links.append((href, "same_site_contact_page"))
-                            if len(found_links) >= 3:
-                                break
-                        for contact_url, contact_route in found_links:
-                            if not await _robots_allows(contact_url, client):
-                                continue
-                            contact = await fetch_public(contact_url)
-                            if contact.error:
-                                route_errors.append(f"{contact_url}: {contact.error}")
-                            else:
-                                candidates.extend(_extract(contact, contact_route, name))
-            except (httpx.HTTPError, ValueError, OSError) as exc:
-                route_errors.append(f"{result.url}: contact-page discovery failed ({type(exc).__name__}).")
+                    if not await _robots_allows(contact_url, client):
+                        continue
+                contact = await fetch_public(contact_url)
+                if contact.error:
+                    route_errors.append(f"{contact_url}: {contact.error}")
+                else:
+                    candidates.extend(_extract(contact, "same_site_contact_page", name))
 
     # Stable deduplication keeps the same email from duplicating across routes.
     unique_candidates: list[dict] = []

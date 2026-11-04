@@ -8,7 +8,7 @@ Private, mobile-friendly prospect workspace for importing leads, collecting publ
 - Imports prospect CSV or JSON, deduplicates the current list, and exports results to CSV.
 - Saves prospects, evidence candidates, ratings, and queue state in Firestore.
 - Queues batches up to 400 records. The worker processes the saved queue after the page closes and resumes queued/running jobs after worker restart.
-- Checks a supplied business website, a limited number of same-site contact/about pages, supplied public source URLs including PDFs, and up to five optional search results when a Brave Search key is configured. Search queries send the business name and location to that configured search provider.
+- Checks a supplied business website, a limited number of same-site contact/about pages, supplied public source URLs including PDFs, Florida Sunbiz exact-name entity records and up to three linked filing PDFs, and up to five optional search results when a Brave Search key is configured. Search queries send the business name and location to that configured search provider.
 - Extracts only email strings that appear in fetched source text. It never invents likely email patterns. PDF bytes are held in memory for extraction and not saved to disk.
 - Marks filing, directory, and search-result emails as needing human review. A score is an evidence rubric, not a probability or mailbox verification.
 - Finds nearby OpenStreetMap records with attribution and provides a separate Google Maps search link. It does not scrape Google Maps.
@@ -64,7 +64,7 @@ Supply a website and/or one or more public source URLs in the prospect CSV/JSON 
 
 No public source means `Not found` or `Failed`; the worker will not manufacture an address. A found email is evidence that the string appeared in a source, not proof that the mailbox exists, belongs to the owner, or is safe to contact. Use the feedback buttons to record whether the candidate is correct, wrong, or stale and rate evidence quality. Future runs use route-level feedback to adjust the evidence score, gradually and within a small bounded range. An email marked wrong for the same business is suppressed on later runs. The score remains a review rubric, not a probability, and a reviewer should still verify important contacts.
 
-For Florida registry data, supply a direct official public filing/PDF URL as a source. The current version does not automatically query Sunbiz by business name. Search route configuration and source-specific adapters can be added after validating official source access and terms.
+Florida prospects marked `FL` or `Florida` are checked against the official Sunbiz entity-name search. The worker follows only exact normalized name matches, checks a maximum of three matching entity records and three PDFs per entity, and labels every filing email for manual review because filings can list agents or preparers instead of a sales contact. Other states can use supplied public filing URLs. The [Florida Department of State search guide](https://dos.fl.gov/sunbiz/search/guides/corporation-records) explains that entity search results lead to filed documents available as PDFs.
 
 ## 5. Desktop browser companion
 

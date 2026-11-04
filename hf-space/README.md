@@ -37,7 +37,7 @@ The worker verifies Firebase ID tokens and checks `ADMIN_UID`. Firestore's clien
 - `POST /api/wake` starts or resumes a queued batch; Firestore is the durable queue.
 - `/health` reports whether Firebase worker credentials were initialized.
 - `POST /api/local-search` uses OpenStreetMap Overpass and returns attributed source records.
-- The crawler fetches only explicitly supplied business website/source URLs and a small number of same-site contact pages. It does not crawl Google Maps.
+- The crawler fetches explicitly supplied business website/source URLs, a small number of same-site contact pages, exact-name Florida Sunbiz entity matches and up to three linked PDFs per matching record. It does not crawl Google Maps.
 - Public emails are emitted only when found in fetched text. It does not generate likely address patterns. Filing and directory contacts are marked for review.
 - MX lookup means the domain advertises mail exchange records; it does not verify that a mailbox exists or accepts mail.
 - Request caps and timeouts are deliberately small for a personal research tool. Respect each source's terms and robots policy.

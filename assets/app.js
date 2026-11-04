@@ -482,7 +482,7 @@ async function saveProspects(records, { fromCapture = false } = {}) {
 
 async function queueIdsInBatches(ids) {
   for (let start = 0; start < ids.length; start += 400) {
-    await queueProspects(ids.slice(start, start + 400), { allowUnloaded: true });
+    await queueProspects(ids.slice(start, start + 400), { allowUnloaded: true, throwOnError: true });
   }
 }
 
@@ -495,7 +495,8 @@ async function importFile(file) {
   } else values = parseCSV(text);
   const result = await saveProspects(values);
   if ($("#autoQueueImports").checked && result.ids?.length) {
-    await queueIdsInBatches(result.ids);
+    try { await queueIdsInBatches(result.ids); }
+    catch (error) { throw new Error("Prospects were imported, but queuing failed: " + friendlyError(error)); }
     showToast("Imported and queued " + result.added + " prospects; skipped " + result.duplicates + " duplicates.");
   } else showToast("Imported " + result.added + " prospects; skipped " + result.duplicates + " duplicates.");
 }
@@ -504,16 +505,31 @@ function selectedProspectIds() {
   return $$(".lead-check:checked").map((item) => item.value);
 }
 
-async function queueProspects(ids, { allowUnloaded = false } = {}) {
-  if (!currentUser) return;
+async function queueProspects(ids, { allowUnloaded = false, throwOnError = false } = {}) {
+  if (!currentUser) {
+    if (throwOnError) throw new Error("Sign in first.");
+    return false;
+  }
   const chosen = ids.length ? ids : prospectRows.filter((item) => item.status === "new").map((item) => item.id);
-  if (!chosen.length) return showToast("Select at least one new prospect.", true);
+  if (!chosen.length) {
+    if (throwOnError) throw new Error("Select at least one new prospect.");
+    showToast("Select at least one new prospect.", true);
+    return false;
+  }
   const validIds = chosen.filter((id) => {
     const record = prospectRows.find((item) => item.id === id);
     return record ? ["new", "not_found", "failed", "needs_review", "found"].includes(record.status) : allowUnloaded;
   });
-  if (!validIds.length) return showToast("Those prospects are already queued or running.", true);
-  if (validIds.length > 400) return showToast("Queue up to 400 prospects per batch.", true);
+  if (!validIds.length) {
+    if (throwOnError) throw new Error("Those prospects are already queued or running.");
+    showToast("Those prospects are already queued or running.", true);
+    return false;
+  }
+  if (validIds.length > 400) {
+    if (throwOnError) throw new Error("Queue up to 400 prospects per batch.");
+    showToast("Queue up to 400 prospects per batch.", true);
+    return false;
+  }
   try {
     const batch = writeBatch(db);
     for (const id of validIds) {
@@ -549,8 +565,11 @@ async function queueProspects(ids, { allowUnloaded = false } = {}) {
     } else {
       setWorkerStatus(false, "Saved; add worker URL in Settings");
     }
+    return true;
   } catch (error) {
+    if (throwOnError) throw error;
     showToast(friendlyError(error), true);
+    return false;
   }
 }
 
@@ -562,7 +581,14 @@ async function saveManualProspect(event) {
     const result = await saveProspects([record]);
     event.currentTarget.reset();
     event.currentTarget.classList.add("hidden");
-    showToast(result.added ? "Prospect saved." : "That prospect is already in your list.");
+    if (result.ids?.length && $("#autoQueueImports").checked) {
+      try {
+        await queueIdsInBatches(result.ids);
+        showToast("Prospect saved and queued for lookup.");
+      } catch (error) {
+        showToast("Prospect saved, but queuing failed: " + friendlyError(error), true);
+      }
+    } else showToast(result.added ? "Prospect saved." : "That prospect is already in your list.");
   } catch (error) { showToast(friendlyError(error), true); }
 }
 
@@ -860,8 +886,12 @@ async function saveLocalResult(index) {
     if (duplicate) return showToast("That business is already in your list.");
     const result = await saveProspects([data]);
     if (result.ids?.length && $("#autoQueueImports").checked) {
-      await queueIdsInBatches(result.ids);
-      showToast("Saved and queued for lookup.");
+      try {
+        await queueIdsInBatches(result.ids);
+        showToast("Saved and queued for lookup.");
+      } catch (error) {
+        showToast("Saved, but queuing failed: " + friendlyError(error), true);
+      }
     } else {
       showToast(result.added ? "Saved to prospects." : "That business is already in your list.");
     }
@@ -873,10 +903,13 @@ async function importExtensionCapture(file) {
     const parsed = JSON.parse(await file.text());
     const items = Array.isArray(parsed) ? parsed : [parsed];
     const result = await saveProspects(items, { fromCapture: true });
-    if ($("#autoQueueImports").checked && result.ids?.length) await queueIdsInBatches(result.ids);
+    if ($("#autoQueueImports").checked && result.ids?.length) {
+      try { await queueIdsInBatches(result.ids); }
+      catch (error) { throw new Error("Capture was imported, but queuing failed: " + friendlyError(error)); }
+    }
     gotoView("prospects");
     showToast(( $("#autoQueueImports").checked ? "Imported and queued " : "Imported ") + result.added + " captured page(s).");
-  } catch (error) { showToast("Could not import this JSON file: " + error.message, true); }
+  } catch (error) { showToast(friendlyError(error), true); }
 }
 
 function buildMobileNav() {
@@ -920,7 +953,7 @@ function initEvents() {
   $("#fileImport").addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    try { const result = await importFile(file); } catch (error) { showToast(error.message || "Import failed.", true); }
+    try { await importFile(file); } catch (error) { showToast(friendlyError(error), true); }
     event.target.value = "";
   });
   $("#extensionImport").addEventListener("change", async (event) => {

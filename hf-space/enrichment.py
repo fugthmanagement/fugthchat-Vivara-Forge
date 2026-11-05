@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import re
@@ -42,16 +43,18 @@ def _plain(value: object, limit: int = 500) -> str:
     return ""
 
 
-def _jsonld_objects(value: object) -> list[dict]:
+def _jsonld_objects(value: object, depth: int = 0) -> list[dict]:
+    if depth > 5:
+        return []
     if isinstance(value, list):
-        return [item for part in value for item in _jsonld_objects(part)]
+        return [item for part in value[:100] for item in _jsonld_objects(part, depth + 1)][:100]
     if not isinstance(value, dict):
         return []
     found = [value]
     graph = value.get("@graph")
     if graph is not None:
-        found.extend(_jsonld_objects(graph))
-    return found
+        found.extend(_jsonld_objects(graph, depth + 1))
+    return found[:100]
 
 
 def _phone_record(value: str, source_url: str, source_route: str, evidence: str = "") -> dict | None:
@@ -178,7 +181,13 @@ def _profile_from_html(soup: BeautifulSoup, current_url: str) -> dict:
     structured_objects: list[dict] = []
     for script in soup.select('script[type="application/ld+json"]')[:20]:
         try:
-            structured_objects.extend(_jsonld_objects(json.loads(script.get_text(" ", strip=True))))
+            raw_json = script.get_text(" ", strip=True)
+            if len(raw_json) > 200_000:
+                continue
+            structured_objects.extend(_jsonld_objects(json.loads(raw_json)))
+            if len(structured_objects) > 100:
+                structured_objects = structured_objects[:100]
+                break
         except (ValueError, TypeError):
             continue
 
@@ -341,7 +350,16 @@ async def fetch_public(url: str) -> FetchResult:
                             reader = PdfReader(BytesIO(data), strict=False)
                             if reader.is_encrypted:
                                 return FetchResult(current, "", True, "Encrypted PDF cannot be read.")
-                            text = "\n".join((page.extract_text() or "") for page in reader.pages[:100])
+                            pages = []
+                            page_errors = 0
+                            for page in reader.pages[:50]:
+                                try:
+                                    pages.append(page.extract_text() or "")
+                                except Exception:
+                                    page_errors += 1
+                            text = "\n".join(pages)
+                            if not text.strip() and page_errors:
+                                return FetchResult(current, "", True, "PDF pages could not be converted to readable text.")
                             return FetchResult(current, text[:MAX_TEXT_CHARS], True)
                         except Exception as exc:  # malformed documents should not fail the whole batch
                             return FetchResult(current, "", True, f"PDF text extraction failed: {type(exc).__name__}.")
@@ -368,6 +386,18 @@ async def fetch_public(url: str) -> FetchResult:
         return FetchResult(current, "", False, f"Fetch failed: {type(exc).__name__}.")
 
 
+async def _fetch_with_retry(url: str) -> FetchResult:
+    """Retry one transient source failure; permanent and policy failures return immediately."""
+    result = await fetch_public(url)
+    transient = result.error.startswith("Fetch failed:") or any(
+        f"HTTP {status}" in result.error for status in (408, 425, 429, 500, 502, 503, 504)
+    )
+    if transient:
+        await asyncio.sleep(0.6)
+        return await fetch_public(url)
+    return result
+
+
 def _evidence(text: str, email: str) -> str:
     match = re.search(re.escape(email), text, re.I)
     if not match:
@@ -378,6 +408,8 @@ def _evidence(text: str, email: str) -> str:
 
 def _extract(result: FetchResult, route: str, business_name: str) -> list[dict]:
     if not result.text:
+        return []
+    if route == "optional_web_search" and business_name and business_name.casefold() not in result.text.casefold():
         return []
     candidates = []
     for email in dict.fromkeys(EMAIL_RE.findall(result.text)):
@@ -447,20 +479,28 @@ async def _robots_allows(url: str, client: httpx.AsyncClient) -> bool:
         return False
 
 
-async def _search_urls(name: str, city: str, state: str, api_key: str) -> list[str]:
+async def _search_urls(name: str, city: str, state: str, api_key: str) -> tuple[list[str], str]:
     if not api_key:
-        return []
-    query = " ".join(part for part in [f'"{name}"', city, state, "contact email"] if part).strip()
-    try:
-        async with httpx.AsyncClient(timeout=TIMEOUT, headers={"X-Subscription-Token": api_key, "Accept": "application/json"}) as client:
-            response = await client.get("https://api.search.brave.com/res/v1/web/search", params={"q": query, "count": 5})
-            if response.status_code != 200:
-                return []
-            body = response.json()
-            results = body.get("web", {}).get("results", [])
-            return [item.get("url", "") for item in results if item.get("url")][:5]
-    except (httpx.HTTPError, ValueError):
-        return []
+        return [], ""
+    query = " ".join(part for part in [f'"{name}"', city, state, "contact email phone owner"] if part).strip()
+    last_error = ""
+    async with httpx.AsyncClient(timeout=TIMEOUT, headers={"X-Subscription-Token": api_key, "Accept": "application/json"}) as client:
+        for attempt in range(2):
+            try:
+                response = await client.get("https://api.search.brave.com/res/v1/web/search", params={"q": query, "count": 5})
+                if response.status_code == 200:
+                    body = response.json()
+                    results = body.get("web", {}).get("results", [])
+                    urls = [item.get("url", "") for item in results if item.get("url")][:5]
+                    return urls, ""
+                last_error = f"Optional web search returned HTTP {response.status_code}."
+                if response.status_code not in {408, 425, 429, 500, 502, 503, 504}:
+                    break
+            except (httpx.HTTPError, ValueError) as exc:
+                last_error = f"Optional web search failed: {type(exc).__name__}."
+            if attempt == 0:
+                await asyncio.sleep(0.6)
+    return [], last_error or "Optional web search did not return usable results."
 
 
 def _canonical_entity_name(value: str) -> str:
@@ -480,7 +520,7 @@ async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str], list[dict]]:
         async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as client:
             if not await _robots_allows(search_url, client):
                 return [], ["Sunbiz search is disallowed by robots.txt or its robots file could not be checked."], []
-        search_result = await fetch_public(search_url)
+        search_result = await _fetch_with_retry(search_url)
     except httpx.HTTPError:
         return [], ["Sunbiz search could not be reached."], []
     if search_result.error:
@@ -505,7 +545,7 @@ async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str], list[dict]]:
         async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as client:
             if not await _robots_allows(detail_url, client):
                 continue
-        detail = await fetch_public(detail_url)
+        detail = await _fetch_with_retry(detail_url)
         if detail.error:
             errors.append(f"Sunbiz entity record: {detail.error}")
             continue
@@ -524,7 +564,7 @@ async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str], list[dict]]:
             async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as client:
                 if not await _robots_allows(pdf_url, client):
                     continue
-            filing = await fetch_public(pdf_url)
+            filing = await _fetch_with_retry(pdf_url)
             if filing.error:
                 errors.append(f"Sunbiz filing PDF: {filing.error}")
                 continue
@@ -548,7 +588,7 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
         if source.startswith(("https://", "http://")) and len(source) < 2048:
             urls.append((source, "provided_public_source"))
 
-    search_urls = await _search_urls(name, str(prospect.get("city", "")), str(prospect.get("state", "")), search_api_key)
+    search_urls, search_error = await _search_urls(name, str(prospect.get("city", "")), str(prospect.get("state", "")), search_api_key)
     urls.extend((url, "optional_web_search") for url in search_urls)
 
     unique_urls = []
@@ -562,7 +602,7 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
             break
 
     candidates: list[dict] = []
-    route_errors: list[str] = []
+    route_errors: list[str] = [search_error] if search_error else []
     profiles: list[dict] = []
     if state in {"FL", "FLORIDA"}:
         sunbiz_candidates, sunbiz_errors, sunbiz_profiles = await _sunbiz_lookup(name)
@@ -571,6 +611,10 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
         profiles.extend(sunbiz_profiles)
 
     if not unique_urls and state not in {"FL", "FLORIDA"}:
+        if route_errors:
+            return [], route_errors[:10], []
+        if search_api_key:
+            return [], ["Optional web search returned no source pages for this exact business and location."], []
         return [], ["No public source URL was provided and optional web search is not configured."], []
     for url, route in unique_urls:
         try:
@@ -581,7 +625,7 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
         except httpx.HTTPError:
             route_errors.append(f"{url}: robots.txt could not be checked.")
             continue
-        result = await fetch_public(url)
+        result = await _fetch_with_retry(url)
         if result.error:
             route_errors.append(f"{url}: {result.error}")
             continue
@@ -613,7 +657,7 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
                 async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as client:
                     if not await _robots_allows(contact_url, client):
                         continue
-                contact = await fetch_public(contact_url)
+                contact = await _fetch_with_retry(contact_url)
                 if contact.error:
                     route_errors.append(f"{contact_url}: {contact.error}")
                 else:

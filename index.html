@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#0a1020">
   <meta name="description" content="Private prospect research with evidence-backed public email, phone, and business contact enrichment.">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https:; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'">
   <title>Vivara Forge — Lead Workspace</title>
   <link rel="stylesheet" href="./assets/app.css">
   <link rel="manifest" href="./manifest.webmanifest">
@@ -81,7 +83,7 @@
             </div>
           </div>
           <div class="hero-orbit" aria-hidden="true"><div class="orbit-ring"></div><div class="orbit-core">VF</div><i class="orbit-node node-a"></i><i class="orbit-node node-b"></i><i class="orbit-node node-c"></i></div>
-          <div class="hero-foot"><span><i></i>Firestore memory</span><span id="workerBadge"><i></i>Worker not connected</span></div>
+          <div class="hero-foot"><span><i></i>Private cloud memory</span><span id="workerBadge"><i></i>Worker not connected</span></div>
         </div>
 
         <div class="metric-grid">
@@ -91,7 +93,7 @@
           <article class="metric-card"><span class="metric-icon green">✓</span><div><small>Not found</small><strong id="metricNotFound">0</strong></div><span class="metric-note">no public match returned</span></article>
         </div>
 
-        <div class="section-heading"><div><p class="eyebrow">YOUR WORKFLOW</p><h2>Start with a list or a place</h2></div><span class="subtle">Jobs save to Firestore and can resume after you leave.</span></div>
+        <div class="section-heading"><div><p class="eyebrow">YOUR WORKFLOW</p><h2>Start with a list or a place</h2></div><span class="subtle">Jobs save to private cloud memory and can resume after you leave.</span></div>
         <div class="workflow-grid">
           <button class="workflow-card" data-goto="prospects"><span class="step-no">01</span><span class="workflow-symbol">⇧</span><b>Import a prospect list</b><small>CSV or JSON. Keep the business name, location, any listed contact details, and source links.</small><span class="card-arrow">→</span></button>
           <button class="workflow-card" data-goto="local"><span class="step-no">02</span><span class="workflow-symbol">⌖</span><b>Search nearby</b><small>Use open local business data, or open a Google Maps search without extracting its listings.</small><span class="card-arrow">→</span></button>
@@ -103,13 +105,13 @@
       <section id="view-prospects" class="view">
         <div class="page-heading">
           <div><p class="eyebrow">YOUR DATABASE</p><h1>Prospects</h1><p class="muted">Import a list, add a lead manually, then queue selected records for lookup.</p></div>
-          <div class="heading-actions"><label class="button secondary upload-button">Import CSV / JSON<input id="fileImport" type="file" accept=".csv,.json,application/json,text/csv"></label><button id="exportLeads" class="button quiet">Export CSV</button></div>
+          <div class="heading-actions"><label class="button secondary upload-button">Import CSV / JSON<input id="fileImport" type="file" accept=".csv,.json,application/json,text/csv"></label><button id="exportLeads" class="button quiet">Export CSV</button><button id="exportBackup" class="button quiet" type="button">Download full backup</button></div>
         </div>
         <div class="toolbar">
           <div class="search-box"><span>⌕</span><input id="leadSearch" type="search" placeholder="Search business, city, phone, or email"></div>
           <select id="categoryFilter" aria-label="Filter by business niche"><option value="">All niches</option></select>
           <select id="websiteFilter" aria-label="Filter by website"><option value="">Any website status</option><option value="has">Has website</option><option value="none">No website</option></select>
-          <select id="statusFilter" aria-label="Filter by status"><option value="">All statuses</option><option value="new">New</option><option value="queued">Queued</option><option value="running">Searching</option><option value="found">Email found</option><option value="needs_review">Needs review</option><option value="not_found">Not found</option><option value="failed">Failed</option></select>
+          <select id="statusFilter" aria-label="Filter by status"><option value="">All statuses</option><option value="new">New</option><option value="queued">Queued</option><option value="running">Searching</option><option value="found">Contact found</option><option value="needs_review">Needs review</option><option value="not_found">Not found</option><option value="failed">Failed</option></select>
           <button id="queueSelected" class="button primary">Queue selected <span>→</span></button>
         </div>
         <label class="auto-queue-control"><input id="autoQueueImports" type="checkbox"> Automatically start lookups after import, manual entry, or saving a local result</label>
@@ -158,10 +160,10 @@
 
       <section id="view-jobs" class="view">
         <div class="page-heading">
-          <div><p class="eyebrow">BACKGROUND WORK</p><h1>Enrichment queue</h1><p class="muted">Queue status is saved in Firestore. A connected worker processes it independently of this page.</p></div>
+          <div><p class="eyebrow">BACKGROUND WORK</p><h1>Enrichment queue</h1><p class="muted">Queue status is saved in private cloud memory. A connected worker processes it independently of this page.</p></div>
           <span id="queueWorkerStatus" class="status-pill"><i></i>Worker not connected</span>
         </div>
-        <div class="callout warning"><span class="callout-icon">!</span><p><b>Background work needs the Hugging Face worker.</b> Closing the page does not cancel a server-side job. If the Space sleeps or restarts, the saved queue can resume when the worker is available.</p></div>
+        <div class="callout warning"><span class="callout-icon">!</span><p><b>Background work needs the connected worker.</b> Closing the page does not cancel a server-side job. If the worker sleeps or restarts, the saved queue can resume when it becomes available.</p></div>
         <div id="jobsList" class="jobs-list"><div class="empty-help visible"><div class="empty-illustration">◷</div><b>No jobs yet</b><p>Select prospects and queue them to start.</p></div></div>
         <div class="section-heading"><div><p class="eyebrow">ROUTE STATUS</p><h2>What can be checked</h2></div></div>
         <div class="route-grid">
@@ -176,39 +178,39 @@
       <section id="view-companion" class="view">
         <div class="page-heading"><div><p class="eyebrow">DESKTOP HELPER</p><h1>Browser companion</h1><p class="muted">A private unpacked Chrome extension for capturing a public business page you open yourself.</p></div></div>
         <div class="companion-layout">
-          <article class="form-card install-card"><span class="large-symbol">⌘</span><p class="eyebrow">LOCAL INSTALL · DESKTOP CHROME</p><h2>Capture one page at a time</h2><p>The companion can extract visible contact details from a public business website after you click Capture. It exports a JSON file you can import here.</p><ol><li>Download or clone this GitHub repository on your computer.</li><li>Open <b>chrome://extensions</b> and turn on Developer mode.</li><li>Select <b>Load unpacked</b> and choose the <code>extension</code> folder.</li><li>Open a public business website and click the extension to review/export the capture.</li></ol><div class="form-actions left"><a class="button secondary" href="https://github.com/fugthmanagement/fugthchat-Vivara-Forge/tree/main/extension" target="_blank" rel="noopener">Open extension files ↗</a><button id="extensionImportTrigger" class="button quiet" type="button">Import capture JSON</button></div></article>
+          <article class="form-card install-card"><span class="large-symbol">⌘</span><p class="eyebrow">LOCAL INSTALL · DESKTOP CHROME</p><h2>Capture one page at a time</h2><p>The companion can extract visible contact details from a public business website after you click Capture. It exports a JSON file you can import here.</p><ol><li>Download the companion files on your computer.</li><li>Open <b>chrome://extensions</b> and turn on Developer mode.</li><li>Select <b>Load unpacked</b> and choose the <code>extension</code> folder.</li><li>Open a public business website and click the extension to review/export the capture.</li></ol><div class="form-actions left"><a class="button secondary" href="https://github.com/fugthmanagement/fugthchat-Vivara-Forge/tree/main/extension" target="_blank" rel="noopener">Download companion files ↗</a><button id="extensionImportTrigger" class="button quiet" type="button">Import capture JSON</button></div></article>
           <article class="form-card terms-card"><span class="large-symbol blue-symbol">⌖</span><p class="eyebrow">MAPS SEARCH</p><h2>Google Maps opens; its listings stay there</h2><p>Google’s <a href="https://cloud.google.com/maps-platform/terms" target="_blank" rel="noopener">current Maps terms</a> prohibit copying business names, addresses, or reviews from Maps into another database. The companion blocks capture on Maps pages. Use the local open-data route here, or a properly licensed API for other data.</p><button class="button quiet" data-goto="local">Go to Local Discovery →</button></article>
         </div>
         <div class="callout"><span class="callout-icon">i</span><p>On iPhone and Android, use the web workspace. The unpacked Chrome extension is for desktop Chrome only.</p></div>
       </section>
 
       <section id="view-settings" class="view">
-        <div class="page-heading"><div><p class="eyebrow">CONNECTIONS</p><h1>Settings</h1><p class="muted">The browser app uses Firebase for sign-in and stored prospect data.</p></div></div>
+        <div class="page-heading"><div><p class="eyebrow">CONNECTIONS</p><h1>Settings</h1><p class="muted">The browser app uses private cloud sign-in and account-scoped prospect memory.</p></div></div>
         <div class="settings-grid">
           <article class="form-card">
-            <p class="eyebrow">BACKGROUND WORKER</p><h2>Hugging Face endpoint</h2><p class="muted">Paste the base URL after the separate Docker Space is deployed. Never paste a token or service-account key here. To search for a site from just a business name and city, configure the worker's optional <code>BRAVE_SEARCH_API_KEY</code> secret. Without it, lookup uses supplied websites/source URLs and Florida registry records.</p>
+            <p class="eyebrow">BACKGROUND WORKER</p><h2>Worker endpoint</h2><p class="muted">Paste the base URL after the separate worker is deployed. Never paste a token or service-account key here. An optional search key lets the worker discover source pages from a business name and city. Without it, lookup uses supplied websites/source URLs and Florida registry records.</p>
             <label>Worker URL<input id="backendUrl" type="url" placeholder="https://your-space.hf.space"></label>
             <div class="form-actions left"><button id="saveBackend" class="button primary">Save endpoint</button><button id="checkBackend" class="button quiet">Check status</button></div>
             <p id="backendMessage" class="notice" role="status"></p>
           </article>
           <article class="form-card">
-            <p class="eyebrow">FIREBASE MEMORY</p><h2>Project connection</h2><div class="connection-row"><span class="connection-dot" id="connectionDot"></span><div><b id="connectionText">Waiting for sign-in</b><small>Project: vivara-forge · Firestore</small></div></div>
+            <p class="eyebrow">PRIVATE CLOUD MEMORY</p><h2>Project connection</h2><div class="connection-row"><span class="connection-dot" id="connectionDot"></span><div><b id="connectionText">Waiting for sign-in</b><small>Vivara Forge · account-scoped records</small></div></div>
             <label class="uid-label">Signed-in account UID<input id="adminUid" type="text" readonly aria-label="Signed-in account UID" placeholder="Sign in to show your UID"></label>
             <div class="form-actions left"><button id="copyAdminUid" class="button secondary" type="button" disabled>Copy UID for worker</button></div>
             <p class="fine-print">The worker accepts the two verified admin emails in the code by default. Set this value as <code>ADMIN_UID</code> only if you want to pin a Space to one account.</p>
-            <div id="adminVerifyPanel" class="callout warning hidden"><span class="callout-icon">!</span><div><b>Verify this admin email</b><p>Admin access is granted to the two configured addresses after Firebase verifies the email.</p><div class="form-actions left"><button id="resendVerification" class="button secondary" type="button">Resend verification email</button><button id="refreshVerification" class="button quiet" type="button">I verified it</button></div><p id="verificationMessage" class="notice"></p></div></div>
-            <p class="muted">If importing reports insufficient permissions, Firebase has not published this repository's rules yet. Open “View rules to publish,” copy the whole file into the Firestore Rules tab, tap Publish, then reload. The rules keep each account's records private.</p>
-            <div class="form-actions left"><a class="inline-link" href="https://console.firebase.google.com/project/vivara-forge/firestore/rules" target="_blank" rel="noopener">Open Firestore Rules ↗</a><a class="inline-link" href="https://github.com/fugthmanagement/fugthchat-Vivara-Forge/blob/main/firestore.rules" target="_blank" rel="noopener">View rules to publish ↗</a></div>
+            <div id="adminVerifyPanel" class="callout warning hidden"><span class="callout-icon">!</span><div><b>Verify this admin email</b><p>Admin access is granted to the two configured addresses after the account service verifies the email.</p><div class="form-actions left"><button id="resendVerification" class="button secondary" type="button">Resend verification email</button><button id="refreshVerification" class="button quiet" type="button">I verified it</button></div><p id="verificationMessage" class="notice"></p></div></div>
+            <p class="muted">If importing reports insufficient permissions, the cloud data rules have not been published yet. Open the rules console, copy the repository's full rules file, publish it, then reload. The rules keep each account's records private.</p>
+            <div class="form-actions left"><a class="inline-link" href="https://console.firebase.google.com/project/vivara-forge/firestore/rules" target="_blank" rel="noopener">Open data rules console ↗</a><a class="inline-link" href="https://github.com/fugthmanagement/fugthchat-Vivara-Forge/blob/main/firestore.rules" target="_blank" rel="noopener">View rules file ↗</a></div>
           </article>
           <article class="form-card full-span">
-            <p class="eyebrow">DATA HANDLING</p><h2>Raw documents are temporary</h2><p class="muted">The worker parses fetched PDFs in memory, keeps the source URL and relevant text evidence, and discards the PDF bytes. Candidate emails are never generated from guessed name patterns. An email found in a filing is labeled as a filing contact and requires review.</p>
+            <p class="eyebrow">DATA HANDLING</p><h2>Temporary documents, recoverable records</h2><p class="muted">The worker parses fetched PDFs in memory, keeps the source URL and relevant text evidence, and discards the PDF bytes. Contact details are never generated from guessed patterns. Use Download full backup from Prospects to save a restorable JSON copy of current prospects, evidence, job history, and sanitized diagnostics.</p>
           </article>
         </div>
       </section>
 
       <section id="view-admin" class="view">
         <div class="page-heading"><div><p class="eyebrow">OWNER CONTROLS</p><h1>Admin dashboard</h1><p class="muted">Review registered accounts, their latest sign-in, and their assigned rank.</p></div><button id="refreshAdminAccounts" class="button secondary" type="button">Refresh accounts</button></div>
-        <div class="admin-summary"><article class="metric-card"><span class="metric-icon blue">♙</span><div><small>Registered accounts</small><strong id="adminAccountCount">—</strong></div><span class="metric-note">Firebase Authentication</span></article><span id="adminStatus" class="status-pill"><i></i>Connect worker</span></div>
+        <div class="admin-summary"><article class="metric-card"><span class="metric-icon blue">♙</span><div><small>Registered accounts</small><strong id="adminAccountCount">—</strong></div><span class="metric-note">Private account directory</span></article><span id="adminStatus" class="status-pill"><i></i>Connect worker</span></div>
         <div class="form-card admin-accounts-card"><div class="section-heading compact"><div><p class="eyebrow">ACCOUNT DIRECTORY</p><h2>Accounts &amp; ranks</h2></div><input id="adminAccountSearch" type="search" placeholder="Filter email or name" aria-label="Filter accounts"></div>
           <div class="table-wrap"><table class="lead-table admin-table"><thead><tr><th>Account</th><th>Last sign-in</th><th>Verification</th><th>Rank</th><th></th></tr></thead><tbody id="adminAccountRows"><tr><td colspan="5" class="empty-state">Connect the worker to load accounts.</td></tr></tbody></table></div>
           <p id="adminAccountsMessage" class="notice" role="status"></p>
@@ -216,12 +218,12 @@
         <div class="form-card schedule-card"><p class="eyebrow">BACKGROUND WAKE SCHEDULE</p><h2>Wake the worker on a timer</h2><p class="muted">The timer checks for jobs you already queued and resumes them. It does not invent or import new prospects. The repository's scheduled workflow must also be configured to ping the worker.</p>
           <div class="schedule-controls"><label>Check for saved jobs<select id="wakeInterval"><option value="0">Off</option><option value="15">Every 15 minutes</option><option value="30">Every 30 minutes</option><option value="60">Every hour</option><option value="180">Every 3 hours</option><option value="360">Every 6 hours</option></select></label><button id="saveWakeSchedule" class="button primary" type="button">Save schedule</button></div>
           <p id="wakeScheduleMessage" class="fine-print">Schedule is off.</p>
-          <p class="fine-print">To allow a sleeping Space to wake, add GitHub Actions secrets <code>HF_WORKER_URL</code> and <code>WORKER_WAKE_TOKEN</code>, and set the same <code>WORKER_WAKE_TOKEN</code> secret in the worker.</p>
+          <p class="fine-print">To allow a sleeping worker to wake, add the repository automation secrets described in the setup guide and set the same wake token in the worker.</p>
         </div>
-        <div class="callout"><span class="callout-icon">i</span><p>The account list shows registration and latest Firebase sign-in timestamps; Firebase does not provide a reliable “currently online” list. The two configured admin emails cannot be demoted here.</p></div>
+        <div class="callout"><span class="callout-icon">i</span><p>The account list shows registration and latest sign-in timestamps. The account service does not provide a reliable “currently online” list. The two configured admin emails cannot be demoted here.</p></div>
       </section>
 
-      <footer class="footer"><span>Vivara Forge · Evidence-based prospect research</span><span>GitHub Pages · Firebase-backed</span></footer>
+      <footer class="footer"><span>Vivara Forge · Evidence-based prospect research</span><span>Private cloud workspace</span></footer>
     </main>
   </div>
 

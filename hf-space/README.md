@@ -23,8 +23,9 @@ Add these in the Space settings; never commit the service-account JSON to GitHub
 | `ADMIN_UID` / `ADMIN_UIDS` | Variable, optional | Pin one or more Firebase Authentication UIDs. A pinned UID is also authorized. |
 | `ALLOWED_ORIGINS` | Variable | `https://fugthmanagement.github.io` (add `http://localhost:8000` only for local development). |
 | `BRAVE_SEARCH_API_KEY` | Secret, optional | Enables search from a business name and location. Without it, supply a website/source URL; Florida names can also use Sunbiz. |
-| `WORKER_WAKE_TOKEN` | Secret, optional | Protects scheduled wake requests from GitHub Actions. |
-| `OVERPASS_URL` | Variable, optional | OpenStreetMap Overpass endpoint; default is the public interpreter endpoint. |
+| `WORKER_WAKE_TOKEN` | Secret, optional | Protects scheduled wake requests from GitHub Actions; use at least 32 random characters. |
+| `OVERPASS_URLS` | Variable, optional | Up to three comma-separated HTTPS OpenStreetMap Overpass endpoints, tried in order. The older `OVERPASS_URL` variable still works. |
+| `MAX_CONCURRENT_JOBS` | Variable, optional | Concurrent prospect batches from 1 to 4; default is 2. |
 
 The service-account private key is powerful. Restrict access to the Space and rotate the key if it is ever exposed.
 
@@ -37,6 +38,7 @@ The worker verifies Firebase ID tokens and checks for a verified allowlisted ema
 ## Runtime behavior
 
 - `POST /api/wake` starts or resumes a queued batch; Firestore is the durable queue.
+- Interrupted jobs retry automatically up to three times. The worker returns an interrupted prospect to the queue, limits concurrent batches, and retries transient source and Firestore operations with short bounded delays.
 - The admin dashboard can list Authentication accounts and last sign-in, update non-admin rank claims, and save a scheduled wake interval. Rank claims are account labels; the two allowlisted emails remain protected admins.
 - To wake a sleeping Space, configure `HF_WORKER_URL` and `WORKER_WAKE_TOKEN` as GitHub Actions secrets and `WORKER_WAKE_TOKEN` in the Space. The repository workflow calls the Space every 15 minutes; the saved schedule controls whether it starts queued jobs on that check.
 - `/health` reports whether Firebase worker credentials were initialized.
@@ -44,6 +46,7 @@ The worker verifies Firebase ID tokens and checks for a verified allowlisted ema
 - The crawler fetches explicitly supplied business website/source URLs, a small number of same-site contact pages, exact-name Florida Sunbiz entity matches and up to three linked PDFs per matching record. It does not crawl Google Maps.
 - It collects multiple public email candidates and publicly listed phone numbers. A public person's name is retained only when a page or filing explicitly associates it with a role such as owner, registered agent, officer, or manager. Roles are not conflated: a registered agent is not automatically considered an owner. Each result keeps its source and evidence and requires human review.
 - It does not invent likely email patterns or search for private personal phone numbers. PDF bytes are parsed in memory, then discarded; the source URL and extracted evidence remain available for review.
+- A conclusive lookup marks older evidence as superseded. If every route is temporarily unavailable, prior successful evidence remains current so a temporary outage cannot erase the last usable result.
 - MX lookup means the domain advertises mail exchange records; it does not verify that a mailbox exists or accepts mail.
 - Request caps and timeouts are deliberately small for a personal research tool. Respect each source's terms and robots policy.
 

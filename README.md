@@ -5,11 +5,11 @@ Account-scoped, mobile-friendly prospect workspace for importing leads, collecti
 ## What it does
 
 - Email/password sign-in and account creation, plus Google sign-in. Each account sees only its own Firestore records. The verified addresses `fugthchat@gmail.com` and `fugthmanagement@gmail.com` are protected administrators.
-- Imports prospect CSV or JSON, deduplicates the current list, and exports results to CSV.
+- Imports prospect CSV or JSON, deduplicates the current list, exports results to CSV, and creates a restorable full JSON backup containing prospect evidence, job history, and sanitized client diagnostics.
 - Maps common lead-list columns into business name, niche, city/state, multiple email candidates, multiple phone numbers, publicly named people and stated roles, website, address, Google Maps link, hours, rating, review count, and social URLs. Unavailable values stay blank. The Prospects view filters by niche and website presence.
 - Optionally queues each imported batch automatically. The worker can save public contact details from visible HTML, contact/about pages, public PDFs, and Schema.org JSON-LD alongside source evidence.
 - Saves prospects, evidence candidates, ratings, and queue state in Firestore.
-- Queues batches up to 400 records. The worker processes the saved queue after the page closes and resumes queued/running jobs after worker restart.
+- Queues batches up to 400 records. The worker processes the saved queue after the page closes, limits concurrent batches, resumes queued/running jobs after worker restart, and automatically retries an interrupted job up to three times. A prospect interrupted while running is returned to the queue instead of being left stuck.
 - Checks a supplied business website, a limited number of same-site contact/about pages, supplied public source URLs including PDFs, Florida Sunbiz exact-name entity records and up to three linked filing PDFs, and up to five optional search results when a Brave Search key is configured. Search queries send the business name and location to that configured search provider.
 - Extracts multiple public emails and phone candidates, plus person names only when a public page or filing explicitly associates the name with a role. Emails, phone numbers, and names retain their source URL and evidence excerpt and require review. A registered agent, officer, or manager is not automatically treated as the owner. It does not search for private personal phone numbers or guess contact details. It never invents likely email patterns or executes fetched website JavaScript. PDF bytes are held in memory for extraction and not saved to disk.
 - Marks filing, directory, and search-result emails as needing human review. A score is an evidence rubric, not a probability or mailbox verification.
@@ -39,6 +39,12 @@ The web app uses project `vivara-forge`, email/password account creation and sig
    firebase deploy --only firestore:rules --project vivara-forge
    ```
 
+5. This project does not use Realtime Database or Cloud Storage. The repository includes deny-by-default rules for both unused services. Publish them once so an old test-mode setting cannot expose data:
+
+   ```sh
+   firebase deploy --only database,storage --project vivara-forge
+   ```
+
 The included rules let a signed-in user access only their own prospect, job, feedback, and candidate paths. Candidate evidence is read-only to the browser and written by the server worker. A Firestore `permission-denied` error during import usually means these rules have not yet been published to `vivara-forge`; signing in alone does not publish them. The worker allows only verified configured administrators, not every account that can sign up.
 
 Firestore can store the small JSON prospect/evidence records without requiring a Cloud Functions deployment. Storage usage and request quotas still apply; this design does not depend on Cloud Storage or Cloud Functions.
@@ -50,15 +56,18 @@ Create a **new Docker Space** for this project. Upload the contents of `hf-space
 - Secret `FIREBASE_SERVICE_ACCOUNT_JSON`: the full JSON contents of a service-account key created for the Firebase project. Keep it out of GitHub and do not paste it in the browser.
 - Optional variable `ADMIN_UID`: pin one Firebase Authentication UID. The two verified administrator emails above are also authorized by default; set `ADMIN_EMAILS` only if you want to replace that allowlist.
 - Variable `ALLOWED_ORIGINS`: `https://fugthmanagement.github.io` (optionally add `http://localhost:8000` during local testing).
-- Secret `WORKER_WAKE_TOKEN`: a long random token shared with the GitHub Actions repository secret of the same name.
+- Secret `WORKER_WAKE_TOKEN`: a random token of at least 32 characters shared with the GitHub Actions repository secret of the same name.
 - Optional secret `BRAVE_SEARCH_API_KEY`: enables the external web-search route. Without it, the worker checks supplied URLs only.
-- Optional variable `OVERPASS_URL`: an alternate OpenStreetMap Overpass API endpoint.
+- Optional variable `OVERPASS_URLS`: up to three comma-separated HTTPS OpenStreetMap Overpass endpoints. They are tried in order when local discovery encounters a temporary endpoint failure. The older single `OVERPASS_URL` variable remains supported.
+- Optional variable `MAX_CONCURRENT_JOBS`: number of prospect batches processed at once, from 1 to 4; default is 2.
 
 The worker verifies Firebase ID tokens and only accepts the configured administrator emails or UIDs. The admin dashboard uses the worker's Firebase Admin SDK to list accounts and update rank claims; only protected admin identities can call those endpoints. Firestore Admin SDK writes bypass client Security Rules, so keep the service-account key out of the repository and protect the admin allowlist. Once the Space is built, put its base `https://…hf.space` URL in the app's Settings and use **Check status**.
 
 ### Background-job behavior
 
 Jobs are recorded in Firestore before the browser asks the worker to start. Once the worker accepts a job, it runs independently of the browser page; closing Safari, Chrome, or the tab does not cancel it. The worker also polls Firestore to resume queued or interrupted work after it restarts. CPU Basic Spaces sleep after 48 hours of inactivity; a sleeping Space cannot make progress until it wakes, but the saved job remains in Firestore and resumes when the worker starts again.
+
+Temporary source and Firestore failures use bounded retries. A conclusive new lookup marks older evidence as superseded, while a lookup where every source is unavailable keeps the most recent successful evidence visible. The Prospects page's **Download full backup** button creates a JSON file that the same import control can restore later. Backup restores prospect data and evidence; job history is included for reference and is not re-queued automatically.
 
 The Admin dashboard can set a 15-minute to 6-hour interval for checking saved jobs. To wake a sleeping Space from outside its own process, add GitHub repository **Actions secrets** `HF_WORKER_URL` and `WORKER_WAKE_TOKEN`, then add the same `WORKER_WAKE_TOKEN` as a secret in the Hugging Face Space. `.github/workflows/wake-worker.yml` calls the worker every 15 minutes; the saved interval decides whether it should start due jobs. This resumes jobs already queued in Firestore. Turn on **Automatically start lookups** to create queue jobs after lead import, manual entry, or saving from Local Discovery. The setting is on by default. The wake workflow sends a request every 15 minutes when both GitHub secrets are configured, including while the saved worker schedule is off; disable the workflow or remove its secrets to stop those requests.
 

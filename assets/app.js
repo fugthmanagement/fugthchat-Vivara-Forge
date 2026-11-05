@@ -25,6 +25,7 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const ADMIN_EMAILS = new Set(["fugthchat@gmail.com", "fugthmanagement@gmail.com"]);
 const IMPORT_META_PREFIX = "[VF-META]";
+const APP_VERSION = "2026.11.05-resilience-1";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 let currentUser = null;
@@ -40,8 +41,43 @@ let toastTimer = null;
 let authMode = "signin";
 let adminAccounts = [];
 
+function safeStorageGet(key, fallback = "") {
+  try { return localStorage.getItem(key) ?? fallback; }
+  catch { return fallback; }
+}
+
+function safeStorageSet(key, value) {
+  try { localStorage.setItem(key, value); return true; }
+  catch { return false; }
+}
+
+function sanitizeDiagnostic(value) {
+  return String(value || "Unknown error")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/([?&](?:token|key|secret|authorization)=)[^&\s]+/gi, "$1[redacted]")
+    .replace(/https?:\/\/[^\s]+/gi, (url) => url.split("?")[0])
+    .slice(0, 300);
+}
+
+function recordClientError(context, error) {
+  const current = (() => {
+    try { return JSON.parse(safeStorageGet("vivaraDiagnostics", "[]")); }
+    catch { return []; }
+  })();
+  const entries = Array.isArray(current) ? current.slice(-24) : [];
+  entries.push({
+    at: new Date().toISOString(),
+    context: String(context || "client").slice(0, 80),
+    message: sanitizeDiagnostic(error?.message || error),
+    code: String(error?.code || "").slice(0, 80),
+    online: navigator.onLine,
+    version: APP_VERSION
+  });
+  safeStorageSet("vivaraDiagnostics", JSON.stringify(entries));
+}
+
 const labels = {
-  new: "New", queued: "Queued", running: "Searching", found: "Email found",
+  new: "New", queued: "Queued", running: "Searching", found: "Contact found",
   needs_review: "Needs review", not_found: "Not found", failed: "Failed",
   completed: "Completed", partial: "Partially complete"
 };
@@ -62,16 +98,17 @@ function setLoginMessage(message, isError = true) {
 }
 
 function friendlyError(error) {
+  if (error) recordClientError("handled", error);
   const code = error?.code || "";
-  if (code.includes("auth/unauthorized-domain")) return "Add this GitHub Pages domain under Firebase Authentication → Settings → Authorized domains.";
-  if (code.includes("auth/operation-not-allowed")) return "Enable this sign-in provider in Firebase Authentication → Sign-in method.";
+  if (code.includes("auth/unauthorized-domain")) return "Add this site domain under the account service's authorized domains.";
+  if (code.includes("auth/operation-not-allowed")) return "Enable this sign-in method in the account service settings.";
   if (code.includes("auth/invalid-credential") || code.includes("auth/wrong-password") || code.includes("auth/user-not-found")) return "Email or password was not accepted.";
   if (code.includes("auth/email-already-in-use")) return "An account already uses that email. Sign in or reset the password instead.";
   if (code.includes("auth/invalid-email")) return "Enter a valid email address.";
   if (code.includes("auth/weak-password")) return "Choose a stronger password with at least 6 characters.";
   if (code.includes("auth/too-many-requests")) return "Too many attempts. Wait a little and try again.";
-  if (code.includes("permission-denied")) return "Firestore blocked this import. The repository's Firestore Rules must be deployed to vivara-forge; open Settings → Firestore Rules and publish them, then refresh.";
-  if (code.includes("unavailable")) return "Firebase is temporarily unavailable. Try again in a moment.";
+  if (code.includes("permission-denied")) return "Cloud memory blocked this import. Open Settings → Data rules, publish the repository rules, then refresh.";
+  if (code.includes("unavailable")) return "Cloud memory is temporarily unavailable. Your queued data was not cleared; try again in a moment.";
   return error?.message || "Something went wrong.";
 }
 
@@ -100,7 +137,7 @@ function updateAdminVisibility() {
 
 function setConnection(online, message) {
   $("#firebaseStatus").classList.toggle("offline", !online);
-  $("#firebaseStatus").innerHTML = "<i></i>" + (online ? "Firebase ready" : "Firebase needs setup");
+  $("#firebaseStatus").innerHTML = "<i></i>" + (online ? "Cloud memory ready" : "Cloud memory needs setup");
   $("#connectionDot").classList.toggle("online", online);
   $("#connectionText").textContent = message || (online ? "Signed in and connected" : "Waiting for sign-in");
 }
@@ -128,7 +165,7 @@ function beginWorkspace(user) {
     renderProspects();
     updateMetrics();
   }, (error) => {
-    setConnection(false, "Firestore rules need setup");
+    setConnection(false, "Cloud data rules need setup");
     showToast(friendlyError(error), true);
   });
 
@@ -244,12 +281,12 @@ function escapeHtml(value) {
 }
 
 function candidateFor(prospectId) {
-  return candidateRows.filter((item) => item.prospectId === prospectId && item.email)
+  return candidateRows.filter((item) => item.prospectId === prospectId && item.email && item.isCurrent !== false)
     .sort((a, b) => Number(b.confidenceScore || 0) - Number(a.confidenceScore || 0))[0];
 }
 
 function emailCandidatesFor(prospect) {
-  const sources = candidateRows.filter((item) => item.prospectId === prospect.id && item.email)
+  const sources = candidateRows.filter((item) => item.prospectId === prospect.id && item.email && item.isCurrent !== false)
     .sort((a, b) => Number(b.confidenceScore || 0) - Number(a.confidenceScore || 0));
   const imported = Array.isArray(prospect.emailCandidates) ? prospect.emailCandidates : [];
   const manual = prospect.manualEmail ? [{ email: prospect.manualEmail, sourceUrl: prospect.manualSourceUrl || prospect.website || "", evidenceText: prospect.manualEvidenceText || "", sourceRouteLabel: "Imported or captured", requiresReview: true }] : [];
@@ -270,7 +307,7 @@ function emailCandidatesFor(prospect) {
 }
 
 function profileDocsFor(prospectId) {
-  return candidateRows.filter((item) => item.prospectId === prospectId && item.candidateType === "business_profile");
+  return candidateRows.filter((item) => item.prospectId === prospectId && item.candidateType === "business_profile" && item.isCurrent !== false);
 }
 
 function profileFor(prospectId) {
@@ -414,7 +451,8 @@ function renderJobs() {
   container.innerHTML = jobRows.map((job) => {
     const progress = Math.max(0, Math.min(100, Number(job.progressPercent || 0)));
     const created = job.createdAt?.toDate ? job.createdAt.toDate().toLocaleString() : "Just created";
-    return '<article class="job-card"><div class="job-top"><b>Prospect batch · ' + escapeHtml(job.requestedCount || 0) + ' records</b>' + statusPill(job.status) + '</div><div class="job-meta"><span>Created ' + escapeHtml(created) + '</span><span>' + escapeHtml(job.progress || 0) + ' / ' + escapeHtml(job.requestedCount || 0) + ' processed</span></div><div class="progress-track"><div class="progress-bar" style="width:' + progress + '%"></div></div>' + (job.lastError ? '<p class="fine-print">' + escapeHtml(job.lastError) + '</p>' : "") + "</article>";
+    const attempt = Number(job.attemptCount || 0);
+    return '<article class="job-card"><div class="job-top"><b>Prospect batch · ' + escapeHtml(job.requestedCount || 0) + ' records</b>' + statusPill(job.status) + '</div><div class="job-meta"><span>Created ' + escapeHtml(created) + (attempt > 1 ? ' · recovery attempt ' + escapeHtml(attempt) : '') + '</span><span>' + escapeHtml(job.progress || 0) + ' / ' + escapeHtml(job.requestedCount || 0) + ' processed</span></div><div class="progress-track"><div class="progress-bar" style="width:' + progress + '%"></div></div>' + (job.lastError ? '<p class="fine-print">' + escapeHtml(job.lastError) + '</p>' : "") + "</article>";
   }).join("");
 }
 
@@ -507,7 +545,7 @@ function normalizePublicPhone(value, sourceUrl = "", sourceRoute = "imported", e
 
 function normalizeInput(row) {
   const fields = Object.fromEntries(Object.entries(row || {}).map(([key, value]) => [
-    key.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""), value
+    String(key).replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""), value
   ]));
   const businessName = firstValue(fields, ["businessname", "business_name", "business", "company", "company_name", "name", "title"]);
   if (!businessName) return null;
@@ -629,14 +667,20 @@ function normalizeInput(row) {
 }
 
 function cleanUrl(value) {
-  const raw = String(value || "").trim();
+  let raw = String(value || "").trim();
   if (!raw) return "";
-  if (/^https?:\/\//i.test(raw)) return raw.slice(0, 2048);
-  if (/^[\w.-]+\.[a-z]{2,}(\/.*)?$/i.test(raw)) return ("https://" + raw).slice(0, 2048);
-  return "";
+  if (!/^https?:\/\//i.test(raw) && /^[\w.-]+\.[a-z]{2,}(\/.*)?$/i.test(raw)) raw = "https://" + raw;
+  try {
+    const parsed = new URL(raw);
+    if (!["http:", "https:"].includes(parsed.protocol) || !parsed.hostname || parsed.username || parsed.password) return "";
+    if (parsed.port && !["80", "443"].includes(parsed.port)) return "";
+    parsed.hash = "";
+    return parsed.toString().slice(0, 2048);
+  } catch { return ""; }
 }
 
 async function saveProspects(records, { fromCapture = false } = {}) {
+  if (!Array.isArray(records) || records.length > 5000) throw new Error("Import up to 5,000 prospects at a time.");
   const clean = records.map(normalizeInput).filter(Boolean);
   if (!clean.length) throw new Error("No rows had a business name.");
   const seen = new Set(prospectRows.map((p) => [p.businessName, p.city, p.phone].join("|").toLowerCase()));
@@ -650,12 +694,19 @@ async function saveProspects(records, { fromCapture = false } = {}) {
   const ids = [];
   for (let start = 0; start < newRows.length; start += 400) {
     const batch = writeBatch(db);
+    const chunkIds = [];
     newRows.slice(start, start + 400).forEach((item) => {
       const ref = doc(userCollection("prospects"));
-      ids.push(ref.id);
+      chunkIds.push(ref.id);
       batch.set(ref, { ...item, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
     });
-    await batch.commit();
+    try {
+      await batch.commit();
+      ids.push(...chunkIds);
+    } catch (error) {
+      if (ids.length) throw new Error(ids.length + " prospects were saved before the connection failed. Re-import the same file after reconnecting; saved duplicates will be skipped. " + friendlyError(error));
+      throw error;
+    }
   }
   return { added: newRows.length, duplicates: clean.length - newRows.length, fromCapture, ids };
 }
@@ -667,11 +718,13 @@ async function queueIdsInBatches(ids) {
 }
 
 async function importFile(file) {
+  if (file.size > 5_000_000) throw new Error("Import files must be 5 MB or smaller. Split this list into smaller batches.");
   const text = await file.text();
   let values;
   if (file.name.toLowerCase().endsWith(".json") || file.type.includes("json")) {
     const parsed = JSON.parse(text);
-    values = Array.isArray(parsed) ? parsed : [parsed.prospect || parsed];
+    if (parsed?.format === "vivara-forge-backup-v1" && Array.isArray(parsed.prospects)) values = parsed.prospects;
+    else values = Array.isArray(parsed) ? parsed : [parsed.prospect || parsed];
   } else values = parseCSV(text);
   const result = await saveProspects(values);
   if ($("#autoQueueImports").checked && result.ids?.length) {
@@ -679,6 +732,74 @@ async function importFile(file) {
     catch (error) { throw new Error("Prospects were imported, but queuing failed: " + friendlyError(error)); }
     showToast("Imported and queued " + result.added + " prospects; skipped " + result.duplicates + " duplicates.");
   } else showToast("Imported " + result.added + " prospects; skipped " + result.duplicates + " duplicates.");
+}
+
+function downloadJsonFile(filename, value) {
+  const blob = new Blob([JSON.stringify(value, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function exportBackupJSON() {
+  const prospects = prospectRows.map((row) => {
+    const facts = profileFacts(row);
+    const emailCandidates = emailCandidatesFor(row).flatMap((item) => (item.sources.length ? item.sources : [item]).map((source) => ({
+      email: item.email,
+      sourceRoute: source.sourceRoute || "",
+      sourceRouteLabel: source.sourceRouteLabel || source.sourceRoute || "",
+      sourceUrl: source.sourceUrl || "",
+      evidenceText: source.evidenceText || "",
+      confidenceScore: Number(item.confidenceScore || 0),
+      requiresReview: source.requiresReview !== false
+    })));
+    return {
+      businessName: row.businessName || "",
+      category: row.category || "",
+      city: row.city || "",
+      state: row.state || "",
+      phone: facts.phone || row.phone || "",
+      businessPhones: facts.businessPhones,
+      website: facts.website || row.website || "",
+      sourceUrlsText: row.sourceUrlsText || facts.evidenceUrl || "",
+      notes: row.notes || "",
+      emailCandidates,
+      publicContacts: facts.publicContacts,
+      address: facts.address,
+      postalCode: facts.postalCode,
+      hours: facts.hours,
+      description: facts.description,
+      rating: facts.rating,
+      reviewCount: facts.reviewCount,
+      googleMapsUrl: facts.googleMapsUrl,
+      socialUrls: facts.socialUrls
+    };
+  });
+  let diagnostics = [];
+  try { diagnostics = JSON.parse(safeStorageGet("vivaraDiagnostics", "[]")); } catch {}
+  const backup = {
+    format: "vivara-forge-backup-v1",
+    exportedAt: new Date().toISOString(),
+    appVersion: APP_VERSION,
+    accountUid: currentUser?.uid || "",
+    prospects,
+    jobHistory: jobRows.map((job) => ({
+      id: job.id,
+      status: job.status || "",
+      requestedCount: Number(job.requestedCount || 0),
+      progress: Number(job.progress || 0),
+      progressPercent: Number(job.progressPercent || 0),
+      attemptCount: Number(job.attemptCount || 0),
+      lastError: sanitizeDiagnostic(job.lastError || "")
+    })),
+    diagnostics: Array.isArray(diagnostics) ? diagnostics.slice(-25) : []
+  };
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  downloadJsonFile("vivara-forge-backup-" + stamp + ".json", backup);
+  showToast("Full recovery backup downloaded.");
 }
 
 function selectedProspectIds() {
@@ -731,17 +852,17 @@ async function queueProspects(ids, { allowUnloaded = false, throwOnError = false
     await batch.commit();
     gotoView("jobs");
     showToast(validIds.length + " prospects saved to the queue.");
-    const base = localStorage.getItem("vivaraBackendUrl") || "";
+    const base = getBackendUrl();
     if (base) {
-      const token = await currentUser.getIdToken();
-      fetch(base.replace(/\/$/, "") + "/api/wake", {
+      workerRequest("/api/wake", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
         body: JSON.stringify({ job_id: jobRef.id })
-      }).then(async (response) => {
-        if (!response.ok) throw new Error(await response.text());
+      }).then(() => {
         setWorkerStatus(true, "Worker connected");
-      }).catch(() => setWorkerStatus(false, "Saved; worker did not respond"));
+      }).catch((error) => {
+        recordClientError("wake queued job", error);
+        setWorkerStatus(false, "Saved safely; worker will resume it after the next wake");
+      });
     } else {
       setWorkerStatus(false, "Saved; add worker URL in Settings");
     }
@@ -838,23 +959,58 @@ function setWorkerStatus(online, message) {
   if (message) $("#backendMessage").textContent = message;
 }
 
+function normalizeBackendUrl(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password || parsed.search || parsed.hash) return "";
+    parsed.pathname = parsed.pathname.replace(/\/+$/, "");
+    return parsed.toString().replace(/\/$/, "");
+  } catch { return ""; }
+}
+
 function getBackendUrl() {
-  return (localStorage.getItem("vivaraBackendUrl") || $("#backendUrl").value || "").trim().replace(/\/$/, "");
+  return normalizeBackendUrl(safeStorageGet("vivaraBackendUrl") || $("#backendUrl").value || "");
+}
+
+async function resilientFetch(url, options = {}, { attempts = 2, timeoutMs = 20000, context = "network request" } = {}) {
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(url, { ...options, signal: controller.signal });
+      if (attempt < attempts && [408, 425, 429, 500, 502, 503, 504].includes(response.status)) {
+        await response.text().catch(() => "");
+        await new Promise((resolve) => setTimeout(resolve, 450 * attempt));
+        continue;
+      }
+      return response;
+    } catch (error) {
+      lastError = error?.name === "AbortError" ? new Error("Request timed out.") : error;
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 450 * attempt));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  recordClientError(context, lastError);
+  throw lastError || new Error("Network request failed.");
 }
 
 async function workerRequest(path, options = {}) {
   const base = getBackendUrl();
-  if (!base) throw new Error("Save the Hugging Face worker URL in Settings first.");
+  if (!base) throw new Error("Save the background worker URL in Settings first.");
   if (!currentUser) throw new Error("Sign in first.");
   const token = await currentUser.getIdToken();
-  const response = await fetch(base + path, {
+  const response = await resilientFetch(base + path, {
     ...options,
     headers: {
       ...(options.body ? { "Content-Type": "application/json" } : {}),
       ...(options.headers || {}),
       "Authorization": "Bearer " + token
     }
-  });
+  }, { attempts: 2, timeoutMs: 25000, context: "worker " + path });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.detail || "The worker request failed.");
   return data;
@@ -892,7 +1048,7 @@ async function loadAdminAccounts() {
     adminAccounts = data.accounts || [];
     renderAdminAccounts();
     $("#adminStatus").innerHTML = "<i></i>Admin access ready";
-    $("#adminAccountsMessage").textContent = "Showing registered accounts and their most recent Firebase sign-in.";
+    $("#adminAccountsMessage").textContent = "Showing registered accounts and their most recent sign-in.";
   } catch (error) {
     $("#adminStatus").innerHTML = "<i></i>Worker not available";
     $("#adminAccountsMessage").textContent = error.message || "Could not load accounts.";
@@ -967,7 +1123,7 @@ async function refreshVerification() {
     currentUser = auth.currentUser;
     $("#adminUid").value = currentUser.uid;
     updateAdminVisibility();
-    $("#verificationMessage").textContent = currentUser.emailVerified ? "Verified. Admin access is ready." : "Firebase still shows this email as unverified. Open the verification link, then tap again.";
+    $("#verificationMessage").textContent = currentUser.emailVerified ? "Verified. Admin access is ready." : "The account service still shows this email as unverified. Open the verification link, then tap again.";
     if (isAdminUser()) showToast("Admin access is ready.");
   } catch (error) {
     $("#verificationMessage").textContent = friendlyError(error);
@@ -976,10 +1132,10 @@ async function refreshVerification() {
 
 async function checkBackend() {
   const base = getBackendUrl();
-  if (!base) return showToast("Add the Hugging Face worker URL first.", true);
+  if (!base) return showToast("Add the background worker URL first.", true);
   $("#backendMessage").textContent = "Checking worker…";
   try {
-    const response = await fetch(base + "/health");
+    const response = await resilientFetch(base + "/health", {}, { attempts: 2, timeoutMs: 15000, context: "worker health" });
     const data = await response.json();
     if (!response.ok || data.status !== "ok") throw new Error(data.message || "Worker did not return ready status.");
     setWorkerStatus(Boolean(data.worker_ready), data.worker_ready ? "Worker is ready." : "Backend is online; worker credentials are not configured.");
@@ -1019,15 +1175,13 @@ function updateMapLink() {
 
 async function runLocalSearch() {
   const base = getBackendUrl();
-  if (!base) return showToast("Connect the Hugging Face worker in Settings to search local open data.", true);
+  if (!base) return showToast("Connect the background worker in Settings to search local open data.", true);
   if (!currentLocation) return showToast("Tap Use my location first.", true);
   $("#runLocalSearch").disabled = true;
   $("#runLocalSearch").textContent = "Searching…";
   try {
-    const token = await currentUser.getIdToken();
-    const response = await fetch(base + "/api/local-search", {
+    const data = await workerRequest("/api/local-search", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
       body: JSON.stringify({
         lat: currentLocation.lat,
         lon: currentLocation.lon,
@@ -1035,8 +1189,6 @@ async function runLocalSearch() {
         category: $("#localCategory").value
       })
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.detail || "Local search failed.");
     localItems = data.results || [];
     renderLocalResults();
     showToast("Found " + localItems.length + " open-data results. Review before saving.");
@@ -1154,6 +1306,7 @@ function initEvents() {
   $("#selectAll").addEventListener("change", (event) => $$(".lead-check").forEach((item) => { item.checked = event.target.checked; }));
   $("#queueSelected").addEventListener("click", () => queueProspects(selectedProspectIds()));
   $("#exportLeads").addEventListener("click", exportCSV);
+  $("#exportBackup").addEventListener("click", exportBackupJSON);
   $("#showAddForm").addEventListener("click", () => $("#addProspectForm").classList.remove("hidden"));
   $("#closeAddForm").addEventListener("click", () => $("#addProspectForm").classList.add("hidden"));
   $("#cancelAdd").addEventListener("click", () => $("#addProspectForm").classList.add("hidden"));
@@ -1172,12 +1325,14 @@ function initEvents() {
   $("#mapsSearchTerm").addEventListener("input", updateMapLink);
   $("#localWebsiteFilter").addEventListener("change", renderLocalResults);
   $("#runLocalSearch").addEventListener("click", runLocalSearch);
-  $("#autoQueueImports").checked = localStorage.getItem("vivaraAutoQueueImports") !== "false";
-  $("#autoQueueImports").addEventListener("change", (event) => localStorage.setItem("vivaraAutoQueueImports", String(event.target.checked)));
+  $("#autoQueueImports").checked = safeStorageGet("vivaraAutoQueueImports") !== "false";
+  $("#autoQueueImports").addEventListener("change", (event) => safeStorageSet("vivaraAutoQueueImports", String(event.target.checked)));
   $("#saveBackend").addEventListener("click", () => {
-    const value = $("#backendUrl").value.trim().replace(/\/$/, "");
-    if (value && !/^https:\/\/[^/]+/i.test(value)) return showToast("Use an HTTPS Space URL.", true);
-    localStorage.setItem("vivaraBackendUrl", value);
+    const entered = $("#backendUrl").value.trim();
+    const value = normalizeBackendUrl(entered);
+    if (entered && !value) return showToast("Use an HTTPS worker URL without embedded credentials, query parameters, or fragments.", true);
+    safeStorageSet("vivaraBackendUrl", value);
+    $("#backendUrl").value = value;
     $("#backendMessage").textContent = value ? "Worker URL saved on this device." : "Worker URL cleared.";
     showToast(value ? "Worker URL saved." : "Worker URL cleared.");
   });
@@ -1206,9 +1361,19 @@ function initEvents() {
 
 initEvents();
 buildMobileNav();
-$("#backendUrl").value = localStorage.getItem("vivaraBackendUrl") || "";
+$("#backendUrl").value = safeStorageGet("vivaraBackendUrl") || "";
 updateMapLink();
-setPersistence(auth, browserLocalPersistence).catch(() => {});
+window.addEventListener("error", (event) => recordClientError("uncaught error", event.error || event.message));
+window.addEventListener("unhandledrejection", (event) => {
+  recordClientError("unhandled promise rejection", event.reason);
+  showToast("A background action failed safely. Your saved data was not cleared.", true);
+});
+window.addEventListener("offline", () => showToast("This device is offline. Saved cloud jobs remain queued.", true));
+window.addEventListener("online", () => showToast("Connection restored."));
+setPersistence(auth, browserLocalPersistence).catch((error) => {
+  recordClientError("auth persistence fallback", error);
+  setLoginMessage("Sign-in will work for this tab, but this browser blocked persistent login.");
+});
 onAuthStateChanged(auth, (user) => {
   if (user) beginWorkspace(user);
   else endWorkspace();

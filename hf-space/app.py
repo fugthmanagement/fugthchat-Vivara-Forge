@@ -11,11 +11,11 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import firebase_admin
 import httpx
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from firebase_admin import auth as firebase_auth, credentials, firestore
@@ -38,12 +38,44 @@ ADMIN_EMAILS = {
     if item.strip()
 }
 WORKER_WAKE_TOKEN = os.getenv("WORKER_WAKE_TOKEN", "").strip()
-ORIGINS = [item.strip().rstrip("/") for item in os.getenv("ALLOWED_ORIGINS", "https://fugthmanagement.github.io").split(",") if item.strip()]
-OVERPASS_URL = os.getenv("OVERPASS_URL", "https://overpass-api.de/api/interpreter").strip()
+WAKE_TOKEN_READY = len(WORKER_WAKE_TOKEN) >= 32
+
+
+def _safe_origins(raw: str) -> list[str]:
+    safe = []
+    for item in raw.split(","):
+        value = item.strip().rstrip("/")
+        try:
+            parsed = urlparse(value)
+        except ValueError:
+            continue
+        local_http = parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1"}
+        if (parsed.scheme == "https" or local_http) and parsed.hostname and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment and parsed.path in {"", "/"}:
+            safe.append(value)
+    return list(dict.fromkeys(safe)) or ["https://fugthmanagement.github.io"]
+
+
+ORIGINS = _safe_origins(os.getenv("ALLOWED_ORIGINS", "https://fugthmanagement.github.io"))
+OVERPASS_URLS = [
+    item.strip()
+    for item in os.getenv("OVERPASS_URLS", os.getenv("OVERPASS_URL", "https://overpass-api.de/api/interpreter")).split(",")
+    if item.strip().startswith("https://")
+][:3] or ["https://overpass-api.de/api/interpreter"]
 SEARCH_KEY = os.getenv("BRAVE_SEARCH_API_KEY", "").strip()
+
+
+def _bounded_int(value: str, default: int, minimum: int, maximum: int) -> int:
+    try:
+        return min(maximum, max(minimum, int(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+MAX_CONCURRENT_JOBS = _bounded_int(os.getenv("MAX_CONCURRENT_JOBS", "2"), 2, 1, 4)
 db = None
 firebase_ready = False
-active_jobs: dict[str, asyncio.Task] = {}
+active_jobs: dict[tuple[str, str], asyncio.Task] = {}
+job_semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
 scheduled_wake_lock = asyncio.Lock()
 admin_uid_cache: list[str] | None = None
 admin_uid_cache_expires = 0.0
@@ -59,6 +91,10 @@ def init_firebase() -> None:
         return
     try:
         payload = json.loads(service_account)
+        if payload.get("type") != "service_account" or payload.get("project_id") != PROJECT_ID:
+            raise ValueError("Service account does not belong to the configured project")
+        if not payload.get("client_email") or not payload.get("private_key"):
+            raise ValueError("Service account is missing required fields")
         if not firebase_admin._apps:
             firebase_admin.initialize_app(credentials.Certificate(payload), {"projectId": PROJECT_ID})
         db = firestore.client()
@@ -121,6 +157,18 @@ def _prospect_ref(uid: str, prospect_id: str):
     return db.collection("users").document(uid).collection("prospects").document(prospect_id)
 
 
+async def _firestore_call(operation, label: str, attempts: int = 3):
+    """Retry idempotent Firestore reads/writes without exposing record data in logs."""
+    for attempt in range(1, attempts + 1):
+        try:
+            return await asyncio.to_thread(operation)
+        except Exception:
+            if attempt >= attempts:
+                raise
+            log.warning("Transient Firestore operation failed (%s); retrying %s/%s", label, attempt, attempts)
+            await asyncio.sleep(0.4 * attempt)
+
+
 def _calibrate_candidates(candidates: list[dict], feedback_docs: list[dict], prospect: dict) -> list[dict]:
     name = str(prospect.get("businessName", "")).strip().casefold()
     route_signals: dict[str, list[float]] = {}
@@ -128,7 +176,10 @@ def _calibrate_candidates(candidates: list[dict], feedback_docs: list[dict], pro
     for item in feedback_docs:
         route = str(item.get("sourceRoute", ""))
         label = item.get("label")
-        rating = min(10, max(1, int(item.get("rating", 5))))
+        try:
+            rating = min(10, max(1, int(item.get("rating", 5))))
+        except (TypeError, ValueError):
+            rating = 5
         # Direction comes from the reviewer label; the rating fine-tunes evidence quality.
         direction = {"correct": 1.0, "wrong": -1.5, "stale": -0.7}.get(label)
         if direction is None:
@@ -158,32 +209,55 @@ def _calibrate_candidates(candidates: list[dict], feedback_docs: list[dict], pro
 
 async def _process_job(uid: str, job_id: str) -> None:
     job_ref = _job_ref(uid, job_id)
+    prospect_ids: list[str] = []
+    current_prospect_id = ""
+    attempt_count = 1
     try:
-        job_snapshot = await asyncio.to_thread(job_ref.get)
+        job_snapshot = await _firestore_call(job_ref.get, "read job")
         if not job_snapshot.exists:
             return
         job = job_snapshot.to_dict() or {}
         if job.get("status") not in {"queued", "running"}:
             return
-        await asyncio.to_thread(job_ref.update, {"status": "running", "updatedAt": firestore.SERVER_TIMESTAMP})
+        try:
+            attempt_count = min(10, max(1, int(job.get("attemptCount", 0) or 0) + 1))
+        except (TypeError, ValueError):
+            attempt_count = 1
+        await _firestore_call(lambda: job_ref.update({
+            "status": "running",
+            "attemptCount": attempt_count,
+            "lastError": firestore.DELETE_FIELD,
+            "updatedAt": firestore.SERVER_TIMESTAMP,
+        }), "start job")
         prospect_ids = job.get("prospectIds") or []
         if not prospect_ids:
             # Older queue records are handled conservatively; only queued prospects are eligible.
-            docs = await asyncio.to_thread(
+            docs = await _firestore_call(
                 lambda: list(db.collection("users").document(uid).collection("prospects")
-                             .where(filter=FieldFilter("status", "==", "queued")).limit(400).stream())
+                             .where(filter=FieldFilter("status", "==", "queued")).limit(400).stream()),
+                "load queued prospects",
             )
             prospect_ids = [item.id for item in docs]
-        prospect_ids = [item for item in prospect_ids if isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", item)]
+        prospect_ids = list(dict.fromkeys(
+            item for item in prospect_ids
+            if isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", item)
+        ))[:400]
 
-        requested = max(1, int(job.get("requestedCount", len(prospect_ids) or 1)))
+        try:
+            requested = min(400, max(1, int(job.get("requestedCount", len(prospect_ids) or 1))))
+        except (TypeError, ValueError):
+            requested = max(1, len(prospect_ids))
         feedback_refs = db.collection("users").document(uid).collection("feedback")
-        feedback_docs = await asyncio.to_thread(lambda: [item.to_dict() or {} for item in feedback_refs.order_by("createdAt", direction=firestore.Query.DESCENDING).limit(200).stream()])
+        feedback_docs = await _firestore_call(
+            lambda: [item.to_dict() or {} for item in feedback_refs.order_by("createdAt", direction=firestore.Query.DESCENDING).limit(200).stream()],
+            "load feedback",
+        )
         completed = 0
         failures = 0
-        for prospect_id in prospect_ids[:400]:
+        for prospect_id in prospect_ids:
+            current_prospect_id = prospect_id
             prospect_ref = _prospect_ref(uid, prospect_id)
-            snapshot = await asyncio.to_thread(prospect_ref.get)
+            snapshot = await _firestore_call(prospect_ref.get, "read prospect")
             if not snapshot.exists:
                 completed += 1
                 continue
@@ -191,11 +265,13 @@ async def _process_job(uid: str, job_id: str) -> None:
             if prospect.get("status") not in {"queued", "running"}:
                 completed += 1
                 continue
-            await asyncio.to_thread(prospect_ref.update, {"status": "running", "updatedAt": firestore.SERVER_TIMESTAMP})
+            await _firestore_call(lambda: prospect_ref.update({"status": "running", "updatedAt": firestore.SERVER_TIMESTAMP}), "start prospect")
             try:
                 candidates, errors, profiles = await enrich_prospect(prospect, SEARCH_KEY)
                 extracted_count = len(candidates)
                 candidates = _calibrate_candidates(candidates, feedback_docs, prospect)
+                lookup_run_id = hashlib.sha256(f"{job_id}:{prospect_id}:{time.time_ns()}".encode("utf-8")).hexdigest()[:24]
+                current_evidence_ids: set[str] = set()
                 for item in profiles:
                     profile = {
                         "candidateType": "business_profile",
@@ -205,91 +281,148 @@ async def _process_job(uid: str, job_id: str) -> None:
                         "sourceUrl": item.get("sourceUrl", ""),
                         "profile": item.get("profile", {}),
                         "evidenceText": str(item.get("evidenceText", ""))[:500],
+                        "lookupRunId": lookup_run_id,
+                        "isCurrent": True,
                         "createdAt": firestore.SERVER_TIMESTAMP,
                         "extractedAt": firestore.SERVER_TIMESTAMP,
                     }
                     profile_key = hashlib.sha256(
                         f"{prospect_id}\nprofile\n{profile['sourceUrl']}".encode("utf-8")
                     ).hexdigest()[:40]
+                    current_evidence_ids.add(profile_key)
                     profile_ref = db.collection("users").document(uid).collection("candidates").document(profile_key)
-                    await asyncio.to_thread(profile_ref.set, profile)
+                    await _firestore_call(lambda ref=profile_ref, value=profile: ref.set(value), "save business profile")
                 if candidates:
                     for candidate in candidates:
                         candidate_doc = {
                             **candidate,
                             "prospectId": prospect_id,
                             "businessName": prospect.get("businessName", ""),
+                            "lookupRunId": lookup_run_id,
+                            "isCurrent": True,
                             "createdAt": firestore.SERVER_TIMESTAMP,
                             "extractedAt": firestore.SERVER_TIMESTAMP,
                         }
                         candidate_key = hashlib.sha256(
                             f"{prospect_id}\n{candidate['email'].lower()}\n{candidate['sourceUrl']}".encode("utf-8")
                         ).hexdigest()[:40]
+                        current_evidence_ids.add(candidate_key)
                         candidate_ref = db.collection("users").document(uid).collection("candidates").document(candidate_key)
-                        await asyncio.to_thread(candidate_ref.set, candidate_doc)
+                        await _firestore_call(lambda ref=candidate_ref, value=candidate_doc: ref.set(value), "save email evidence")
                     review_needed = any(item.get("requiresReview") for item in candidates)
                     status = "needs_review" if review_needed else "found"
                     update = {"status": status, "updatedAt": firestore.SERVER_TIMESTAMP}
                     if errors:
                         update["lastLookupNote"] = "Some routes could not be checked: " + " | ".join(errors[:2])[:500]
-                    await asyncio.to_thread(prospect_ref.update, update)
+                    await _firestore_call(lambda: prospect_ref.update(update), "save prospect result")
                 elif extracted_count:
-                    await asyncio.to_thread(prospect_ref.update, {
+                    await _firestore_call(lambda: prospect_ref.update({
                         "status": "needs_review",
                         "lastLookupNote": "Only an email previously marked wrong was found; it was suppressed.",
                         "updatedAt": firestore.SERVER_TIMESTAMP,
-                    })
+                    }), "save suppressed result")
+                elif any((item.get("profile", {}).get("businessPhones") or item.get("profile", {}).get("publicContacts")) for item in profiles):
+                    await _firestore_call(lambda: prospect_ref.update({
+                        "status": "needs_review",
+                        "lastLookupNote": "Public phone or role-labeled contact information was found; no public email was found.",
+                        "updatedAt": firestore.SERVER_TIMESTAMP,
+                    }), "save public contact result")
+                elif profiles:
+                    await _firestore_call(lambda: prospect_ref.update({
+                        "status": "needs_review",
+                        "lastLookupNote": "Public business information was found, but no email, phone, or role-labeled contact was found.",
+                        "updatedAt": firestore.SERVER_TIMESTAMP,
+                    }), "save business information result")
                 elif errors:
                     failures += 1
-                    await asyncio.to_thread(prospect_ref.update, {
+                    await _firestore_call(lambda: prospect_ref.update({
                         "status": "failed",
                         "lastLookupNote": "No route returned readable evidence. " + " | ".join(errors[:3])[:500],
                         "updatedAt": firestore.SERVER_TIMESTAMP,
-                    })
+                    }), "save route failure")
                 else:
-                    await asyncio.to_thread(prospect_ref.update, {
+                    await _firestore_call(lambda: prospect_ref.update({
                         "status": "not_found",
-                        "lastLookupNote": "No email was found in the checked public sources.",
+                        "lastLookupNote": "No public contact or business profile evidence was found in the checked sources.",
                         "updatedAt": firestore.SERVER_TIMESTAMP,
-                    })
+                    }), "save not-found result")
+
+                # Reconcile only after a conclusive run. If every route failed, the last
+                # successful evidence remains visible as a recovery fallback.
+                if candidates or profiles or not errors:
+                    prior_docs = await _firestore_call(
+                        lambda: list(db.collection("users").document(uid).collection("candidates")
+                                     .where(filter=FieldFilter("prospectId", "==", prospect_id)).limit(200).stream()),
+                        "load prior evidence",
+                    )
+                    for prior in prior_docs:
+                        if prior.id not in current_evidence_ids and (prior.to_dict() or {}).get("isCurrent") is not False:
+                            await _firestore_call(lambda ref=prior.reference: ref.update({
+                                "isCurrent": False,
+                                "supersededAt": firestore.SERVER_TIMESTAMP,
+                            }), "supersede old evidence")
             except Exception as exc:
                 log.exception("Prospect lookup failed for %s", prospect_id)
                 failures += 1
-                await asyncio.to_thread(prospect_ref.update, {
+                await _firestore_call(lambda: prospect_ref.update({
                     "status": "failed",
                     "lastLookupNote": f"Lookup failed: {type(exc).__name__}.",
                     "updatedAt": firestore.SERVER_TIMESTAMP,
-                })
+                }), "save prospect failure")
             completed += 1
-            await asyncio.to_thread(job_ref.update, {
+            current_prospect_id = ""
+            await _firestore_call(lambda: job_ref.update({
                 "progress": completed,
                 "progressPercent": min(100, round(100 * completed / requested)),
                 "updatedAt": firestore.SERVER_TIMESTAMP,
-            })
+            }), "save job progress")
             await asyncio.sleep(0.35)
 
         status = "partial" if failures else "completed"
-        await asyncio.to_thread(job_ref.update, {
+        await _firestore_call(lambda: job_ref.update({
             "status": status,
             "progress": min(completed, requested),
             "progressPercent": 100,
             "updatedAt": firestore.SERVER_TIMESTAMP,
-        })
-    except Exception:
+        }), "finish job")
+    except Exception as exc:
         log.exception("Job failed: %s", job_id)
+        retryable = attempt_count < 3
         try:
-            await asyncio.to_thread(job_ref.update, {"status": "failed", "lastError": "Worker failed; queued prospects remain available for retry.", "updatedAt": firestore.SERVER_TIMESTAMP})
+            if current_prospect_id:
+                current_ref = _prospect_ref(uid, current_prospect_id)
+                current = await _firestore_call(current_ref.get, "recover prospect")
+                if current.exists and (current.to_dict() or {}).get("status") == "running":
+                    await _firestore_call(lambda: current_ref.update({
+                        "status": "queued" if retryable else "failed",
+                        "lastLookupNote": "Worker interrupted this lookup; it will retry automatically." if retryable else "Worker failed repeatedly; queue this prospect again after checking the worker.",
+                        "updatedAt": firestore.SERVER_TIMESTAMP,
+                    }), "recover prospect state")
+            await _firestore_call(lambda: job_ref.update({
+                "status": "queued" if retryable else "failed",
+                "attemptCount": attempt_count,
+                "lastError": f"Worker interruption ({type(exc).__name__}); " + ("automatic retry scheduled." if retryable else "automatic retry limit reached."),
+                "updatedAt": firestore.SERVER_TIMESTAMP,
+            }), "save job recovery state")
         except Exception:
             log.exception("Could not save job failure state")
+async def _run_scheduled_job(uid: str, job_id: str) -> None:
+    key = (uid, job_id)
+    current_task = asyncio.current_task()
+    try:
+        async with job_semaphore:
+            await _process_job(uid, job_id)
     finally:
-        active_jobs.pop(job_id, None)
+        if active_jobs.get(key) is current_task:
+            active_jobs.pop(key, None)
 
 
 def _schedule_job(uid: str, job_id: str) -> bool:
-    running = active_jobs.get(job_id)
+    key = (uid, job_id)
+    running = active_jobs.get(key)
     if running and not running.done():
         return False
-    active_jobs[job_id] = asyncio.create_task(_process_job(uid, job_id), name=f"vivara-job-{job_id}")
+    active_jobs[key] = asyncio.create_task(_run_scheduled_job(uid, job_id), name=f"vivara-job-{job_id}")
     return True
 
 
@@ -299,6 +432,7 @@ async def _authorized_admin_uids() -> list[str]:
     if admin_uid_cache is not None and now < admin_uid_cache_expires:
         return list(admin_uid_cache)
     uids = set(ADMIN_UIDS)
+    resolution_failed = False
     for email in ADMIN_EMAILS:
         try:
             account = await asyncio.to_thread(firebase_auth.get_user_by_email, email)
@@ -307,23 +441,32 @@ async def _authorized_admin_uids() -> list[str]:
         except firebase_auth.UserNotFoundError:
             continue
         except Exception:
+            resolution_failed = True
             log.exception("Could not resolve an administrator account")
-    admin_uid_cache = sorted(uids)
-    admin_uid_cache_expires = now + 600
+    if not resolution_failed or admin_uid_cache is None:
+        admin_uid_cache = sorted(uids)
+    admin_uid_cache_expires = now + (60 if resolution_failed else 600)
     return list(admin_uid_cache)
 
 
 async def _start_saved_jobs() -> int:
     started = 0
+    capacity = max(0, MAX_CONCURRENT_JOBS * 2 - sum(1 for task in active_jobs.values() if not task.done()))
+    if capacity == 0:
+        return 0
     for uid in await _authorized_admin_uids():
         jobs_ref = db.collection("users").document(uid).collection("jobs")
         for status in ("queued", "running"):
-            docs = await asyncio.to_thread(
-                lambda s=status, ref=jobs_ref: list(ref.where(filter=FieldFilter("status", "==", s)).limit(20).stream())
+            docs = await _firestore_call(
+                lambda s=status, ref=jobs_ref, cap=capacity: list(ref.where(filter=FieldFilter("status", "==", s)).limit(cap).stream()),
+                "load resumable jobs",
             )
             for item in docs:
                 if _schedule_job(uid, item.id):
                     started += 1
+                    capacity -= 1
+                    if capacity == 0:
+                        return started
     return started
 
 
@@ -342,13 +485,15 @@ def _iso_timestamp(value: Any) -> str | None:
 async def _resume_loop() -> None:
     while True:
         try:
+            if not firebase_ready:
+                init_firebase()
             if firebase_ready and (ADMIN_UIDS or ADMIN_EMAILS):
                 await _start_saved_jobs()
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("Queue resume check failed")
-        await asyncio.sleep(30)
+        await asyncio.sleep(30 if firebase_ready else 60)
 
 
 @asynccontextmanager
@@ -359,6 +504,7 @@ async def lifespan(_: FastAPI):
     resume_task.cancel()
     for task in list(active_jobs.values()):
         task.cancel()
+    await asyncio.gather(resume_task, *list(active_jobs.values()), return_exceptions=True)
 
 
 app = FastAPI(title="Vivara Forge Enrichment Worker", version="0.1.0", lifespan=lifespan)
@@ -371,6 +517,18 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    return response
+
+
 @app.get("/")
 def root():
     return {"service": "Vivara Forge Enrichment Worker", "health": "/health"}
@@ -378,7 +536,11 @@ def root():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "worker_ready": bool(firebase_ready and (ADMIN_UIDS or ADMIN_EMAILS)), "queue_runner": True}
+    return {
+        "status": "ok",
+        "worker_ready": bool(firebase_ready and (ADMIN_UIDS or ADMIN_EMAILS)),
+        "queue_runner": True,
+    }
 
 
 @app.post("/api/wake")
@@ -387,7 +549,7 @@ async def wake(payload: WakeRequest, authorization: str | None = Header(default=
     uid = user["uid"]
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", payload.job_id):
         raise HTTPException(status_code=400, detail="Queue job ID is malformed.")
-    snapshot = await asyncio.to_thread(_job_ref(uid, payload.job_id).get)
+    snapshot = await _firestore_call(_job_ref(uid, payload.job_id).get, "load requested job")
     if not snapshot.exists:
         raise HTTPException(status_code=404, detail="Queue job was not found for this account.")
     job = snapshot.to_dict() or {}
@@ -458,7 +620,7 @@ async def set_account_rank(uid: str, payload: RankRequest, authorization: str | 
 @app.get("/api/admin/wake-schedule")
 async def get_wake_schedule(authorization: str | None = Header(default=None)):
     require_admin(authorization)
-    snapshot = await asyncio.to_thread(_schedule_ref().get)
+    snapshot = await _firestore_call(_schedule_ref().get, "load wake schedule")
     data = snapshot.to_dict() if snapshot.exists else {}
     return {
         "enabled": bool(data.get("enabled", False)),
@@ -482,20 +644,20 @@ async def save_wake_schedule(payload: WakeScheduleRequest, authorization: str | 
         "updatedAt": firestore.SERVER_TIMESTAMP,
         "nextRunAt": now + timedelta(minutes=payload.interval_minutes) if enabled else None,
     }
-    await asyncio.to_thread(_schedule_ref().set, data, merge=True)
+    await _firestore_call(lambda: _schedule_ref().set(data, merge=True), "save wake schedule")
     return {"enabled": enabled, "intervalMinutes": data["intervalMinutes"], "nextRunAt": _iso_timestamp(data["nextRunAt"])}
 
 
 @app.post("/api/scheduled-wake")
 async def scheduled_wake(x_worker_wake_token: str | None = Header(default=None)):
-    if not WORKER_WAKE_TOKEN:
-        raise HTTPException(status_code=503, detail="Scheduled wake token is not configured.")
+    if not WAKE_TOKEN_READY:
+        raise HTTPException(status_code=503, detail="Scheduled wake token must be configured with at least 32 characters.")
     if not x_worker_wake_token or not secrets.compare_digest(x_worker_wake_token, WORKER_WAKE_TOKEN):
         raise HTTPException(status_code=403, detail="Scheduled wake token is invalid.")
     if not firebase_ready:
         raise HTTPException(status_code=503, detail="Worker credentials are not configured.")
     async with scheduled_wake_lock:
-        snapshot = await asyncio.to_thread(_schedule_ref().get)
+        snapshot = await _firestore_call(_schedule_ref().get, "load scheduled wake")
         settings = snapshot.to_dict() if snapshot.exists else {}
         now = datetime.now(timezone.utc)
         next_run = settings.get("nextRunAt")
@@ -503,13 +665,21 @@ async def scheduled_wake(x_worker_wake_token: str | None = Header(default=None))
             next_run = next_run.replace(tzinfo=timezone.utc)
         if not settings.get("enabled") or not next_run or next_run > now:
             return {"status": "idle", "started": 0, "nextRunAt": _iso_timestamp(next_run)}
-        started = await _start_saved_jobs()
         interval = int(settings.get("intervalMinutes", 0) or 0)
-        await asyncio.to_thread(_schedule_ref().update, {
+        if interval not in {15, 30, 60, 180, 360}:
+            await _firestore_call(lambda: _schedule_ref().set({
+                "enabled": False,
+                "intervalMinutes": 0,
+                "lastError": "Invalid saved interval; schedule disabled safely.",
+                "updatedAt": firestore.SERVER_TIMESTAMP,
+            }, merge=True), "disable invalid schedule")
+            return {"status": "disabled_invalid_schedule", "started": 0, "nextRunAt": None}
+        started = await _start_saved_jobs()
+        await _firestore_call(lambda: _schedule_ref().update({
             "lastTriggeredAt": firestore.SERVER_TIMESTAMP,
             "nextRunAt": now + timedelta(minutes=interval),
             "updatedAt": firestore.SERVER_TIMESTAMP,
-        })
+        }), "advance wake schedule")
         return {"status": "checked", "started": started, "nextRunAt": _iso_timestamp(now + timedelta(minutes=interval))}
 
 
@@ -550,13 +720,24 @@ def build_overpass_query(lat: float, lon: float, radius: int, category: str) -> 
 async def local_search(payload: LocalSearchRequest, authorization: str | None = Header(default=None)):
     require_admin(authorization)
     query = build_overpass_query(payload.lat, payload.lon, payload.radius_m, payload.category)
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=8.0), headers={"User-Agent": "VivaraForgeResearch/1.0"}) as client:
-            response = await client.post(OVERPASS_URL, data={"data": query})
-            response.raise_for_status()
-            raw = response.json()
-    except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(status_code=502, detail=f"OpenStreetMap search failed ({type(exc).__name__}). Try again later.")
+    raw = None
+    last_error: Exception | None = None
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=8.0), headers={"User-Agent": "VivaraForgeResearch/1.0"}) as client:
+        for endpoint in OVERPASS_URLS:
+            try:
+                response = await client.post(endpoint, data={"data": query})
+                response.raise_for_status()
+                body = response.json()
+                if isinstance(body, dict) and isinstance(body.get("elements"), list):
+                    raw = body
+                    break
+                raise ValueError("Response did not include an elements list")
+            except (httpx.HTTPError, ValueError) as exc:
+                last_error = exc
+                log.warning("Local search endpoint failed (%s); trying fallback if configured", type(exc).__name__)
+    if raw is None:
+        error_name = type(last_error).__name__ if last_error else "Unavailable"
+        raise HTTPException(status_code=502, detail=f"Open business data search failed ({error_name}). Try again later.")
 
     results = []
     for element in raw.get("elements", [])[:100]:

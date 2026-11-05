@@ -17,18 +17,22 @@ function isGoogleMaps(url) {
   } catch { return false; }
 }
 
-function schemaObjects(value) {
-  if (Array.isArray(value)) return value.flatMap(schemaObjects);
+function schemaObjects(value, depth = 0) {
+  if (depth > 5) return [];
+  if (Array.isArray(value)) return value.slice(0, 100).flatMap((item) => schemaObjects(item, depth + 1));
   if (!value || typeof value !== "object") return [];
-  return [value, ...(value["@graph"] ? schemaObjects(value["@graph"]) : [])];
+  return [value, ...(value["@graph"] ? schemaObjects(value["@graph"], depth + 1) : [])];
 }
 
 function extractVisiblePage() {
-  const bodyText = document.body?.innerText || "";
+  const bodyText = (document.body?.innerText || "").slice(0, 500000);
   const emailPattern = /(?<![\w.+-])[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+/i;
   const structured = [];
-  for (const node of document.querySelectorAll('script[type="application/ld+json"]')) {
-    try { structured.push(...schemaObjects(JSON.parse(node.textContent || ""))); } catch {}
+  for (const node of [...document.querySelectorAll('script[type="application/ld+json"]')].slice(0, 20)) {
+    try {
+      structured.push(...schemaObjects(JSON.parse((node.textContent || "").slice(0, 200000))));
+      if (structured.length > 100) structured.length = 100;
+    } catch {}
   }
   const business = structured.find((item) => {
     const type = Array.isArray(item["@type"]) ? item["@type"].join(" ") : String(item["@type"] || "");
@@ -37,7 +41,11 @@ function extractVisiblePage() {
   const textEmails = [...bodyText.matchAll(new RegExp(emailPattern.source, "ig"))].map((match) => match[0].replace(/[.,;:()\[\]{}<>"']+$/g, "").toLowerCase());
   const mailLinks = [...document.querySelectorAll('a[href^="mailto:"]')]
     .filter((anchor) => anchor.getClientRects().length)
-    .map((anchor) => decodeURIComponent(anchor.getAttribute("href").slice(7).split(/[?#]/)[0]).trim().toLowerCase());
+    .map((anchor) => {
+      const value = anchor.getAttribute("href").slice(7).split(/[?#]/)[0];
+      try { return decodeURIComponent(value).trim().toLowerCase(); }
+      catch { return value.trim().toLowerCase(); }
+    });
   const schemaEmail = String(business.email || "").trim().toLowerCase();
   const emails = [...new Set([...textEmails, ...mailLinks, ...(schemaEmail ? [schemaEmail] : [])])].filter((email) => emailPattern.test(email)).slice(0, 40);
   const emailEvidence = emails.map((email) => {
@@ -216,7 +224,7 @@ function downloadJSON() {
   link.href = URL.createObjectURL(blob);
   link.download = "vivara-page-capture.json";
   link.click();
-  URL.revokeObjectURL(link.href);
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
   message("Downloaded. Import this JSON in the workspace.");
 }
 

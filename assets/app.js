@@ -25,7 +25,7 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const ADMIN_EMAILS = new Set(["fugthchat@gmail.com", "fugthmanagement@gmail.com"]);
 const IMPORT_META_PREFIX = "[VF-META]";
-const APP_VERSION = "2026.11.05-resilience-1";
+const APP_VERSION = "2026.11.05-import-fix-1";
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => Array.from(document.querySelectorAll(selector));
 let currentUser = null;
@@ -456,25 +456,38 @@ function renderJobs() {
   }).join("");
 }
 
+function normalizeImportKey(value) {
+  return String(value || "")
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_|_$/g, "");
+}
+
 function parseCSV(text) {
   const rows = [];
   let row = [], cell = "", quoted = false;
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
-    if (quoted && ch === '"' && text[i + 1] === '"') { cell += '"'; i++; }
-    else if (ch === '"') quoted = !quoted;
+  const input = String(text || "").replace(/^\uFEFF/, "");
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (quoted && ch === '"' && input[i + 1] === '"') { cell += '"'; i++; }
+    else if (quoted && ch === '"') quoted = false;
+    else if (!quoted && ch === '"' && !cell.trim()) { cell = ""; quoted = true; }
     else if (!quoted && ch === ",") { row.push(cell.trim()); cell = ""; }
     else if (!quoted && (ch === "\n" || ch === "\r")) {
-      if (ch === "\r" && text[i + 1] === "\n") i++;
+      if (ch === "\r" && input[i + 1] === "\n") i++;
       row.push(cell.trim()); cell = "";
       if (row.some(Boolean)) rows.push(row);
       row = [];
     } else cell += ch;
   }
+  if (quoted) throw new Error("This CSV has an unmatched quotation mark. Export it again as CSV, or save it as JSON.");
   row.push(cell.trim());
   if (row.some(Boolean)) rows.push(row);
   if (rows.length < 2) return [];
-  const headers = rows.shift().map((h) => h.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""));
+  const headers = rows.shift().map(normalizeImportKey);
   return rows.map((values) => Object.fromEntries(headers.map((key, i) => [key, values[i] || ""])));
 }
 
@@ -505,21 +518,28 @@ function structuredValues(value, separators) {
   return listValues(text, separators);
 }
 
+function restoreManagementPhoneExport(value) {
+  return String(value || "").replace(/^'\s*async function importList\(event\)\{/i, "+").trim();
+}
+
 function normalizePublicPhone(value, sourceUrl = "", sourceRoute = "imported", evidenceText = "") {
   if (value && typeof value === "object") {
-    const raw = String(value.raw || value.formatted || value.e164 || "").trim();
+    const raw = restoreManagementPhoneExport(value.raw || value.formatted || value.e164 || "");
     if (!raw) return null;
     const sourceUrlValue = value.sourceUrl || value.source_url || sourceUrl;
     const sourceRouteValue = value.sourceRoute || value.source_route || sourceRoute;
     const evidenceValue = value.evidenceText || value.evidence_text || evidenceText;
     const normalized = normalizePublicPhone(raw, sourceUrlValue, sourceRouteValue, evidenceValue);
-    return { ...normalized, ...value, raw, formatted: value.formatted || normalized.formatted, e164: value.e164 || normalized.e164, sourceUrl: sourceUrlValue, sourceRoute: sourceRouteValue, evidenceText: evidenceValue };
+    return { ...normalized, ...value, raw, formatted: restoreManagementPhoneExport(value.formatted || "") || normalized.formatted, e164: value.e164 || normalized.e164, sourceUrl: sourceUrlValue, sourceRoute: sourceRouteValue, evidenceText: evidenceValue };
   }
-  const raw = String(value || "").replace(/\s+/g, " ").trim().slice(0, 80);
+  // The management CSV exporter prefixes formula-leading cells with this exact
+  // string. Restore the original international plus so imported numbers remain clean.
+  const raw = restoreManagementPhoneExport(value).replace(/\s+/g, " ").slice(0, 80);
   if (!raw) return null;
   const extension = raw.match(/(?:ext\.?|x)\s*(\d{1,6})$/i)?.[1] || "";
   const base = raw.replace(/(?:ext\.?|x)\s*\d{1,6}$/i, "").trim();
   const digits = base.replace(/\D/g, "");
+  if (digits.length < 7 || digits.length > 15) return null;
   let e164 = "";
   let formatted = raw;
   if (base.startsWith("+") && digits.length >= 8 && digits.length <= 15) e164 = "+" + digits;
@@ -544,13 +564,15 @@ function normalizePublicPhone(value, sourceUrl = "", sourceRoute = "imported", e
 }
 
 function normalizeInput(row) {
-  const fields = Object.fromEntries(Object.entries(row || {}).map(([key, value]) => [
-    String(key).replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, ""), value
-  ]));
+  const fields = Object.fromEntries(Object.entries(row || {}).map(([key, value]) => [normalizeImportKey(key), value]));
   const businessName = firstValue(fields, ["businessname", "business_name", "business", "company", "company_name", "name", "title"]);
   if (!businessName) return null;
   const meta = {};
   const metaFields = [
+    ["sourceRecordId", ["source_record_id", "external_record_id", "source_id"], 160],
+    ["sourceLabel", ["source_label", "source_system", "source"], 100],
+    ["websiteSource", ["website_source"], 80],
+    ["sourceHasWebsite", ["has_website", "website_present"], 10],
     ["address", ["address", "full_address", "formatted_address", "street_address", "street"] , 240],
     ["postalCode", ["postal_code", "postcode", "zip", "zip_code"], 24],
     ["googleMapsUrl", ["google_maps_url", "google_map_url", "google_profile_url", "google_listing_link", "maps_url", "maps_link", "google_url"], 2048],
@@ -562,7 +584,7 @@ function normalizeInput(row) {
   ];
   for (const [key, aliases, limit] of metaFields) {
     let value = firstValue(fields, aliases);
-    if (key === "googleMapsUrl") value = cleanUrl(value);
+    if (key === "googleMapsUrl") value = cleanGoogleMapsUrl(value);
     if (value) meta[key] = value.slice(0, limit);
   }
   const socialUrls = ["facebook", "instagram", "linkedin", "tiktok", "youtube"].map((network) =>
@@ -570,7 +592,7 @@ function normalizeInput(row) {
   ).filter(Boolean);
   socialUrls.push(...firstValue(fields, ["social_urls", "social_links"]).split(/[\s,|]+/).map(cleanUrl).filter(Boolean));
   if (socialUrls.length) meta.socialUrls = [...new Set(socialUrls)].slice(0, 5);
-  const sourceUrl = cleanUrl(firstValue(fields, ["sourceurl", "source_url", "website", "website_url", "url"]));
+  const sourceUrl = cleanUrl(firstValue(fields, ["source_url", "website", "website_url", "business_website", "url"]));
   const emailEvidence = firstValue(fields, ["evidencetext", "evidence_text", "email_evidence"]);
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
   const emailValues = Object.entries(fields)
@@ -639,6 +661,14 @@ function normalizeInput(row) {
     if (name) publicContacts.push({ name: name.slice(0, 100), role, sourceRoute: "user_import", sourceUrl, evidenceText: firstValue(fields, ["contact_evidence", "owner_evidence"]).slice(0, 300), requiresReview: true });
   }
   const uniqueContacts = [...new Map(publicContacts.map((person) => [(person.name + "|" + person.role).toLowerCase(), person])).values()].slice(0, 20);
+  let city = firstValue(fields, ["city", "town", "locality"]);
+  let state = firstValue(fields, ["state", "region", "province"]);
+  const stateCodes = new Set(["AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC"]);
+  const cityState = city.match(/^(.+?),\s*([A-Z]{2})$/);
+  if (cityState && stateCodes.has(cityState[2])) {
+    city = cityState[1].trim();
+    if (!state) state = cityState[2];
+  }
   const baseNotes = firstValue(fields, ["notes", "internal_notes"]).slice(0, Object.keys(meta).length ? 120 : 500);
   let notes = baseNotes;
   if (Object.keys(meta).length) {
@@ -647,14 +677,19 @@ function normalizeInput(row) {
     const encoded = JSON.stringify(Object.fromEntries(entries));
     notes = [baseNotes, IMPORT_META_PREFIX + encoded].filter(Boolean).join("\n").slice(0, 500);
   }
+  const sourceUrls = Object.entries(fields)
+    .filter(([key]) => /^(?:source_url|source_urls|public_source_url|contact_page_url|website_contact_url|filing_url|registry_url)(?:_\d+)?$/.test(key))
+    .flatMap(([, value]) => structuredValues(value, /[,;|\n]+/))
+    .map(cleanUrl)
+    .filter(Boolean);
   return {
     businessName: businessName.slice(0, 160),
     category: firstValue(fields, ["category", "industry", "type", "niche", "business_type"]).slice(0, 80),
-    city: firstValue(fields, ["city", "town", "locality"]).slice(0, 100),
-    state: firstValue(fields, ["state", "region", "province"]).slice(0, 50),
+    city: city.slice(0, 100),
+    state: state.slice(0, 50),
     phone: businessPhones[0]?.formatted || firstValue(fields, ["phone", "phone_number", "telephone", "tel", "business_phone", "primary_phone"]).slice(0, 40),
     website: cleanUrl(firstValue(fields, ["website", "website_url", "business_website", "url", "domain"])),
-    sourceUrlsText: firstValue(fields, ["sourceurls", "source_urls", "source_urls_text", "source_url", "source", "sources", "website_contact_url"]).slice(0, 4000),
+    sourceUrlsText: [...new Set(sourceUrls)].slice(0, 12).join("\n").slice(0, 4000),
     notes,
     manualEmail: emailCandidates[0]?.email || "",
     manualEvidenceText: emailEvidence.slice(0, 500),
@@ -679,10 +714,32 @@ function cleanUrl(value) {
   } catch { return ""; }
 }
 
+function cleanGoogleMapsUrl(value) {
+  const clean = cleanUrl(value);
+  if (!clean) return "";
+  try {
+    const url = new URL(clean);
+    if (!/(^|\.)google\.[a-z.]+$/i.test(url.hostname) || !/\/maps\//i.test(url.pathname)) return "";
+    const detailsIndex = url.pathname.search(/\/data[=!]/i);
+    if (detailsIndex >= 0) url.pathname = url.pathname.slice(0, detailsIndex);
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(?:authuser|hl|rclk|entry|g_ep|utm_.*|fbclid|gclid)$/i.test(key)) url.searchParams.delete(key);
+    }
+    url.hash = "";
+    return url.toString().slice(0, 2048);
+  } catch { return ""; }
+}
+
 async function saveProspects(records, { fromCapture = false } = {}) {
   if (!Array.isArray(records) || records.length > 5000) throw new Error("Import up to 5,000 prospects at a time.");
-  const clean = records.map(normalizeInput).filter(Boolean);
-  if (!clean.length) throw new Error("No rows had a business name.");
+  const normalized = records.map((record) => normalizeInput(record));
+  const clean = normalized.filter(Boolean);
+  const invalidRows = normalized.length - clean.length;
+  if (!clean.length) {
+    if (!records.length) throw new Error("No data rows were found. Keep the first row as column headers and include at least one business.");
+    const headers = Object.keys(records[0] || {}).slice(0, 20).join(", ") || "No headers detected";
+    throw new Error("I read " + records.length + " row(s), but could not find a business name in any row. Headers detected: " + headers + ". Use Business Name, businessName, business_name, Business, Company, or Name as the column header.");
+  }
   const seen = new Set(prospectRows.map((p) => [p.businessName, p.city, p.phone].join("|").toLowerCase()));
   const newRows = clean.filter((item) => {
     const key = [item.businessName, item.city, item.phone].join("|").toLowerCase();
@@ -690,7 +747,7 @@ async function saveProspects(records, { fromCapture = false } = {}) {
     seen.add(key);
     return true;
   });
-  if (!newRows.length) return { added: 0, duplicates: clean.length };
+  if (!newRows.length) return { added: 0, duplicates: clean.length, invalidRows, fromCapture };
   const ids = [];
   for (let start = 0; start < newRows.length; start += 400) {
     const batch = writeBatch(db);
@@ -708,7 +765,7 @@ async function saveProspects(records, { fromCapture = false } = {}) {
       throw error;
     }
   }
-  return { added: newRows.length, duplicates: clean.length - newRows.length, fromCapture, ids };
+  return { added: newRows.length, duplicates: clean.length - newRows.length, invalidRows, fromCapture, ids };
 }
 
 async function queueIdsInBatches(ids) {
@@ -727,11 +784,12 @@ async function importFile(file) {
     else values = Array.isArray(parsed) ? parsed : [parsed.prospect || parsed];
   } else values = parseCSV(text);
   const result = await saveProspects(values);
+  const skippedText = result.invalidRows ? "; skipped " + result.invalidRows + " row(s) without a recognized business name" : "";
   if ($("#autoQueueImports").checked && result.ids?.length) {
     try { await queueIdsInBatches(result.ids); }
     catch (error) { throw new Error("Prospects were imported, but queuing failed: " + friendlyError(error)); }
-    showToast("Imported and queued " + result.added + " prospects; skipped " + result.duplicates + " duplicates.");
-  } else showToast("Imported " + result.added + " prospects; skipped " + result.duplicates + " duplicates.");
+    showToast("Imported and queued " + result.added + " prospects; skipped " + result.duplicates + " duplicates" + skippedText + ".");
+  } else showToast("Imported " + result.added + " prospects; skipped " + result.duplicates + " duplicates" + skippedText + ".");
 }
 
 function downloadJsonFile(filename, value) {

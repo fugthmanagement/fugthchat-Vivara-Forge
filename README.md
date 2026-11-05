@@ -53,8 +53,8 @@ Firestore can store the small JSON prospect/evidence records without requiring a
 
 Create a **new Docker Space** for this project. Upload the contents of `hf-space/`; do not replace an existing AI Space. Hugging Face's current docs say creating a compute-based Docker Space on a personal account may require a paid plan, even though CPU Basic hardware itself has no hourly charge. Check what your account offers before creating it. If the account blocks new compute Spaces, this bundle is ready but the worker will not be live until it is deployed to an available backend. Add these Space variables/secrets in the Space settings:
 
-- Secret `FIREBASE_SERVICE_ACCOUNT_JSON`: the full JSON contents of a service-account key created for the Firebase project. Keep it out of GitHub and do not paste it in the browser.
-- Optional variable `ADMIN_UID`: pin one Firebase Authentication UID. The two verified administrator emails above are also authorized by default; set `ADMIN_EMAILS` only if you want to replace that allowlist.
+- Secret `FIREBASE_SERVICE_ACCOUNT_JSON`: the full JSON contents of a service-account key created for the Firebase project. In Firebase Project settings → Service accounts, generate a Firebase Admin SDK private key, then add the complete JSON as a Hugging Face **Secret** with this exact name. Keep it out of GitHub, the browser, and chat.
+- The verified administrator emails `fugthchat@gmail.com` and `fugthmanagement@gmail.com` are authorized automatically. Do not copy a UID or set `ADMIN_UID` unless you deliberately want to pin an additional account; `ADMIN_EMAILS` replaces the default allowlist if set.
 - Variable `ALLOWED_ORIGINS`: `https://fugthmanagement.github.io` (optionally add `http://localhost:8000` during local testing).
 - Secret `WORKER_WAKE_TOKEN`: a random token of at least 32 characters shared with the GitHub Actions repository secret of the same name.
 - Optional secret `BRAVE_SEARCH_API_KEY`: enables the external web-search route. Without it, the worker checks supplied URLs only.
@@ -62,6 +62,8 @@ Create a **new Docker Space** for this project. Upload the contents of `hf-space
 - Optional variable `MAX_CONCURRENT_JOBS`: number of prospect batches processed at once, from 1 to 4; default is 2.
 
 The worker verifies Firebase ID tokens and only accepts the configured administrator emails or UIDs. The admin dashboard uses the worker's Firebase Admin SDK to list accounts and update rank claims; only protected admin identities can call those endpoints. Firestore Admin SDK writes bypass client Security Rules, so keep the service-account key out of the repository and protect the admin allowlist. Once the Space is built, put its base `https://…hf.space` URL in the app's Settings and use **Check status**.
+
+If `/health` responds but says `worker_ready: false`, the Space is online while Firebase Admin is not initialized. `/api/wake` then returns HTTP 503 and queued jobs remain safely saved in Firestore without running. Add or repair the `FIREBASE_SERVICE_ACCOUNT_JSON` Space secret, restart/rebuild the Space, and use **Check status** until it reports ready. The admin email allowlist is already in the worker; an `ADMIN_UID` setting will not fix a missing service-account secret.
 
 ### Background-job behavior
 

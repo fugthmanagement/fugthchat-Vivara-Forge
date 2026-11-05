@@ -8,7 +8,7 @@
   <meta name="referrer" content="no-referrer">
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https:; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'">
   <title>Vivara Forge — Lead Workspace</title>
-  <link rel="stylesheet" href="./assets/app.css">
+  <link rel="stylesheet" href="./assets/app.css?v=2026-11-05-crawl-controls">
   <link rel="manifest" href="./manifest.webmanifest">
 </head>
 <body>
@@ -112,7 +112,9 @@
           <select id="categoryFilter" aria-label="Filter by business niche"><option value="">All niches</option></select>
           <select id="websiteFilter" aria-label="Filter by website"><option value="">Any website status</option><option value="has">Has website</option><option value="none">No website</option></select>
           <select id="statusFilter" aria-label="Filter by status"><option value="">All statuses</option><option value="new">New</option><option value="queued">Queued</option><option value="running">Searching</option><option value="found">Contact found</option><option value="needs_review">Needs review</option><option value="not_found">Not found</option><option value="failed">Failed</option></select>
-          <button id="queueSelected" class="button primary">Queue selected <span>→</span></button>
+          <button id="selectAllVisible" class="button secondary" type="button">Select all visible</button>
+          <span id="selectionSummary" class="selection-summary" aria-live="polite">0 selected</span>
+          <button id="queueSelected" class="button primary" type="button">Start crawling new prospects <span>→</span></button>
         </div>
         <label class="auto-queue-control"><input id="autoQueueImports" type="checkbox"> Automatically start lookups after import, manual entry, or saving a local result</label>
         <div class="table-wrap">
@@ -161,8 +163,9 @@
       <section id="view-jobs" class="view">
         <div class="page-heading">
           <div><p class="eyebrow">BACKGROUND WORK</p><h1>Enrichment queue</h1><p class="muted">Queue status is saved in private cloud memory. A connected worker processes it independently of this page.</p></div>
-          <span id="queueWorkerStatus" class="status-pill"><i></i>Worker not connected</span>
+          <div class="heading-actions queue-heading-actions"><button id="startQueuedJobs" class="button primary" type="button">Start crawling queued jobs <span>→</span></button><span id="queueWorkerStatus" class="status-pill"><i></i>Worker setup needed</span></div>
         </div>
+        <div id="queueNotice" class="callout warning queue-notice hidden" role="status"><span class="callout-icon">!</span><p></p></div>
         <div class="callout warning"><span class="callout-icon">!</span><p><b>Background work needs the connected worker.</b> Closing the page does not cancel a server-side job. If the worker sleeps or restarts, the saved queue can resume when it becomes available.</p></div>
         <div id="jobsList" class="jobs-list"><div class="empty-help visible"><div class="empty-illustration">◷</div><b>No jobs yet</b><p>Select prospects and queue them to start.</p></div></div>
         <div class="section-heading"><div><p class="eyebrow">ROUTE STATUS</p><h2>What can be checked</h2></div></div>
@@ -188,16 +191,14 @@
         <div class="page-heading"><div><p class="eyebrow">CONNECTIONS</p><h1>Settings</h1><p class="muted">The browser app uses private cloud sign-in and account-scoped prospect memory.</p></div></div>
         <div class="settings-grid">
           <article class="form-card">
-            <p class="eyebrow">BACKGROUND WORKER</p><h2>Worker endpoint</h2><p class="muted">Paste the base URL after the separate worker is deployed. Never paste a token or service-account key here. An optional search key lets the worker discover source pages from a business name and city. Without it, lookup uses supplied websites/source URLs and Florida registry records.</p>
+            <p class="eyebrow">BACKGROUND WORKER</p><h2>Worker endpoint</h2><p class="muted">Paste the base URL after the separate worker is deployed. Never paste a token or service-account key here. If status says “Worker setup needed,” add the <code>FIREBASE_SERVICE_ACCOUNT_JSON</code> secret in Hugging Face Space Settings → Variables and secrets. An optional search key lets the worker discover source pages from a business name and city. Without it, lookup uses supplied websites/source URLs and Florida registry records.</p>
             <label>Worker URL<input id="backendUrl" type="url" placeholder="https://your-space.hf.space"></label>
             <div class="form-actions left"><button id="saveBackend" class="button primary">Save endpoint</button><button id="checkBackend" class="button quiet">Check status</button></div>
             <p id="backendMessage" class="notice" role="status"></p>
           </article>
           <article class="form-card">
             <p class="eyebrow">PRIVATE CLOUD MEMORY</p><h2>Project connection</h2><div class="connection-row"><span class="connection-dot" id="connectionDot"></span><div><b id="connectionText">Waiting for sign-in</b><small>Vivara Forge · account-scoped records</small></div></div>
-            <label class="uid-label">Signed-in account UID<input id="adminUid" type="text" readonly aria-label="Signed-in account UID" placeholder="Sign in to show your UID"></label>
-            <div class="form-actions left"><button id="copyAdminUid" class="button secondary" type="button" disabled>Copy UID for worker</button></div>
-            <p class="fine-print">The worker accepts the two verified admin emails in the code by default. Set this value as <code>ADMIN_UID</code> only if you want to pin a Space to one account.</p>
+            <p class="fine-print">The worker recognizes <b>fugthchat@gmail.com</b> and <b>fugthmanagement@gmail.com</b> automatically after email verification. You do not need to copy a UID or set <code>ADMIN_UID</code>. The Hugging Face Space still needs its Firebase service-account secret to access Firestore.</p>
             <div id="adminVerifyPanel" class="callout warning hidden"><span class="callout-icon">!</span><div><b>Verify this admin email</b><p>Admin access is granted to the two configured addresses after the account service verifies the email.</p><div class="form-actions left"><button id="resendVerification" class="button secondary" type="button">Resend verification email</button><button id="refreshVerification" class="button quiet" type="button">I verified it</button></div><p id="verificationMessage" class="notice"></p></div></div>
             <p class="muted">If importing reports insufficient permissions, the cloud data rules have not been published yet. Open the rules console, copy the repository's full rules file, publish it, then reload. The rules keep each account's records private.</p>
             <div class="form-actions left"><a class="inline-link" href="https://console.firebase.google.com/project/vivara-forge/firestore/rules" target="_blank" rel="noopener">Open data rules console ↗</a><a class="inline-link" href="https://github.com/fugthmanagement/fugthchat-Vivara-Forge/blob/main/firestore.rules" target="_blank" rel="noopener">View rules file ↗</a></div>
@@ -229,6 +230,6 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <input id="extensionImport" type="file" accept=".json,application/json" hidden>
-  <script type="module" src="./assets/app.js?v=2026-11-05-import-fix"></script>
+  <script type="module" src="./assets/app.js?v=2026-11-05-crawl-controls"></script>
 </body>
 </html>

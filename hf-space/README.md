@@ -18,9 +18,9 @@ Add these in the Space settings; never commit the service-account JSON to GitHub
 
 | Name | Type | Purpose |
 | --- | --- | --- |
-| `FIREBASE_SERVICE_ACCOUNT_JSON` | Secret | Full Firebase service-account JSON contents for project `vivara-forge`. |
+| `FIREBASE_SERVICE_ACCOUNT_JSON` | Secret | Full Firebase Admin SDK service-account JSON contents for project `vivara-forge`. Generate it in Firebase Project settings → Service accounts, then paste the full JSON into this Space secret. Never place it in GitHub, the web app, or chat. |
 | `ADMIN_EMAILS` | Variable, optional | Comma-separated allowlist; defaults to the verified accounts `fugthchat@gmail.com,fugthmanagement@gmail.com`. |
-| `ADMIN_UID` / `ADMIN_UIDS` | Variable, optional | Pin one or more Firebase Authentication UIDs. A pinned UID is also authorized. |
+| `ADMIN_UID` / `ADMIN_UIDS` | Variable, optional | Pin one or more Firebase Authentication UIDs. Not required for the two verified admin emails, which are allowlisted by default. |
 | `ALLOWED_ORIGINS` | Variable | `https://fugthmanagement.github.io` (add `http://localhost:8000` only for local development). |
 | `BRAVE_SEARCH_API_KEY` | Secret, optional | Enables search from a business name and location. Without it, supply a website/source URL; Florida names can also use Sunbiz. |
 | `WORKER_WAKE_TOKEN` | Secret, optional | Protects scheduled wake requests from GitHub Actions; use at least 32 random characters. |
@@ -28,6 +28,8 @@ Add these in the Space settings; never commit the service-account JSON to GitHub
 | `MAX_CONCURRENT_JOBS` | Variable, optional | Concurrent prospect batches from 1 to 4; default is 2. |
 
 The service-account private key is powerful. Restrict access to the Space and rotate the key if it is ever exposed.
+
+If `/health` responds with `worker_ready: false`, the Space is online but Firebase Admin did not initialize. `POST /api/wake` will return HTTP 503 and queued Firestore jobs will wait safely. Add or repair the `FIREBASE_SERVICE_ACCOUNT_JSON` secret and restart the Space. Copying a UID or setting `ADMIN_UID` does not replace this required secret. Once `/health` reports `worker_ready: true`, the existing admin emails are recognized automatically after email verification.
 
 ## Deploy
 

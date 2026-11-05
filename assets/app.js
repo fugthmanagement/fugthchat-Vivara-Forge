@@ -153,8 +153,6 @@ function beginWorkspace(user) {
   $("#workspace").classList.remove("hidden");
   $("#userEmail").textContent = user.email || "Signed in";
   $("#userInitial").textContent = (user.displayName || user.email || "V").trim().charAt(0).toUpperCase();
-  $("#adminUid").value = user.uid;
-  $("#copyAdminUid").disabled = false;
   updateAdminVisibility();
   setConnection(true, "Signed in and connected");
   stopListeners();
@@ -190,8 +188,6 @@ function endWorkspace() {
   jobRows = [];
   $("#workspace").classList.add("hidden");
   $("#loginScreen").classList.remove("hidden");
-  $("#adminUid").value = "";
-  $("#copyAdminUid").disabled = true;
   $("#adminNav").classList.add("hidden");
   $("#adminVerifyPanel").classList.add("hidden");
   buildMobileNav();
@@ -393,6 +389,7 @@ function renderProspects() {
   $("#emptyLeads").classList.toggle("visible", prospectRows.length === 0);
   if (!filtered.length) {
     body.innerHTML = '<tr><td colspan="7" class="empty-state">' + (prospectRows.length ? "No prospects match these filters." : "Your list is empty.") + "</td></tr>";
+    updateSelectionSummary();
     return;
   }
   body.innerHTML = filtered.map((prospect) => {
@@ -425,6 +422,7 @@ function renderProspects() {
     const lookupNote = prospect.lastLookupNote ? '<small class="muted">' + escapeHtml(prospect.lastLookupNote) + '</small>' : '';
     return '<tr data-id="' + escapeHtml(prospect.id) + '"><td><input class="lead-check" type="checkbox" value="' + escapeHtml(prospect.id) + '" aria-label="Select ' + escapeHtml(prospect.businessName) + '"></td><td><div class="business-cell"><b>' + escapeHtml(prospect.businessName) + '</b><small>' + escapeHtml(prospect.category || "Business") + '</small></div></td><td>' + escapeHtml(location) + '</td><td>' + contact + '</td><td>' + statusPill(prospect.status) + lookupNote + '</td><td>' + evidence + '</td><td><div class="row-actions"><button class="mini-button" data-row-action="queue" data-id="' + escapeHtml(prospect.id) + '">Queue</button><button class="mini-button" data-row-action="delete" data-id="' + escapeHtml(prospect.id) + '" title="Delete prospect">×</button></div></td></tr>';
   }).join("");
+  updateSelectionSummary();
 }
 
 function updateMetrics() {
@@ -446,8 +444,13 @@ function renderJobs() {
   const container = $("#jobsList");
   if (!jobRows.length) {
     container.innerHTML = '<div class="empty-help visible"><div class="empty-illustration">◷</div><b>No jobs yet</b><p>Select prospects and queue them to start.</p></div>';
+    $("#startQueuedJobs").disabled = true;
+    $("#startQueuedJobs").textContent = "No queued jobs";
     return;
   }
+  const queuedCount = jobRows.filter((job) => job.status === "queued").length;
+  $("#startQueuedJobs").disabled = queuedCount === 0;
+  $("#startQueuedJobs").textContent = queuedCount ? "Start crawling " + queuedCount + " queued job" + (queuedCount === 1 ? "" : "s") + " →" : "No queued jobs";
   container.innerHTML = jobRows.map((job) => {
     const progress = Math.max(0, Math.min(100, Number(job.progressPercent || 0)));
     const created = job.createdAt?.toDate ? job.createdAt.toDate().toLocaleString() : "Just created";
@@ -769,9 +772,12 @@ async function saveProspects(records, { fromCapture = false } = {}) {
 }
 
 async function queueIdsInBatches(ids) {
+  let allStarted = true;
   for (let start = 0; start < ids.length; start += 400) {
-    await queueProspects(ids.slice(start, start + 400), { allowUnloaded: true, throwOnError: true });
+    const started = await queueProspects(ids.slice(start, start + 400), { allowUnloaded: true, throwOnError: true });
+    if (!started) allStarted = false;
   }
+  return allStarted;
 }
 
 async function importFile(file) {
@@ -786,9 +792,13 @@ async function importFile(file) {
   const result = await saveProspects(values);
   const skippedText = result.invalidRows ? "; skipped " + result.invalidRows + " row(s) without a recognized business name" : "";
   if ($("#autoQueueImports").checked && result.ids?.length) {
-    try { await queueIdsInBatches(result.ids); }
+    let started;
+    try { started = await queueIdsInBatches(result.ids); }
     catch (error) { throw new Error("Prospects were imported, but queuing failed: " + friendlyError(error)); }
-    showToast("Imported and queued " + result.added + " prospects; skipped " + result.duplicates + " duplicates" + skippedText + ".");
+    showToast(started
+      ? "Imported and started crawling " + result.added + " prospects; skipped " + result.duplicates + " duplicates" + skippedText + "."
+      : "Imported " + result.added + " prospects. Jobs are saved, but the worker needs setup before crawling can start." + skippedText,
+      !started);
   } else showToast("Imported " + result.added + " prospects; skipped " + result.duplicates + " duplicates" + skippedText + ".");
 }
 
@@ -864,6 +874,79 @@ function selectedProspectIds() {
   return $$(".lead-check:checked").map((item) => item.value);
 }
 
+function updateSelectionSummary() {
+  const selectedCount = selectedProspectIds().length;
+  const boxes = $$(".lead-check");
+  const selectAll = $("#selectAll");
+  selectAll.checked = boxes.length > 0 && selectedCount === boxes.length;
+  selectAll.indeterminate = selectedCount > 0 && selectedCount < boxes.length;
+  $("#selectionSummary").textContent = selectedCount + " selected";
+  const button = $("#queueSelected");
+  if (selectedCount) button.textContent = "Start crawling " + selectedCount + " selected →";
+  else {
+    const newCount = prospectRows.filter((item) => item.status === "new").length;
+    button.textContent = newCount ? "Start crawling " + newCount + " new prospects →" : "Select prospects to crawl";
+    button.disabled = newCount === 0;
+  }
+  if (selectedCount) button.disabled = false;
+}
+
+function setQueueNotice(message, isError = false) {
+  const notice = $("#queueNotice");
+  notice.classList.toggle("hidden", !message);
+  notice.classList.toggle("warning", isError);
+  notice.classList.toggle("success", Boolean(message) && !isError);
+  notice.querySelector("p").textContent = message || "";
+}
+
+async function startSelectedCrawl() {
+  const selected = selectedProspectIds();
+  const ids = selected.length
+    ? selected
+    : prospectRows.filter((item) => item.status === "new").map((item) => item.id);
+  if (!ids.length) return showToast("Select at least one prospect that can be checked.", true);
+  const button = $("#queueSelected");
+  button.disabled = true;
+  button.textContent = "Saving crawl jobs…";
+  try {
+    await queueIdsInBatches(ids);
+  } catch (error) {
+    showToast(friendlyError(error), true);
+  } finally {
+    button.disabled = false;
+    updateSelectionSummary();
+  }
+}
+
+async function startQueuedJobs() {
+  const queued = jobRows.filter((job) => job.status === "queued");
+  if (!queued.length) return showToast("There are no queued jobs waiting to start.", true);
+  const button = $("#startQueuedJobs");
+  button.disabled = true;
+  button.textContent = "Contacting worker…";
+  setQueueNotice("Sending " + queued.length + " saved job" + (queued.length === 1 ? "" : "s") + " to the background worker…");
+  let started = 0;
+  try {
+    for (const job of queued) {
+      const result = await workerRequest("/api/wake", {
+        method: "POST",
+        body: JSON.stringify({ job_id: job.id })
+      }, { attempts: 1, timeoutMs: 12000 });
+      if (result.started || result.status === "running" || result.status === "already_running") started += 1;
+    }
+    setWorkerStatus(true, "Worker accepted saved jobs.", "Worker connected");
+    setQueueNotice("Worker accepted " + started + " saved job" + (started === 1 ? "" : "s") + ". You can close this page; processing runs on the server.");
+    showToast("Background crawling started for " + started + " queued job" + (started === 1 ? "" : "s") + ".");
+  } catch (error) {
+    const detail = friendlyError(error);
+    setWorkerStatus(false, detail, "Worker setup needed");
+    setQueueNotice("Jobs are still safely saved in Firestore, but crawling did not start: " + detail, true);
+    showToast("Jobs saved; crawling did not start: " + detail, true);
+  } finally {
+    renderJobs();
+  }
+}
+
 async function queueProspects(ids, { allowUnloaded = false, throwOnError = false } = {}) {
   if (!currentUser) {
     if (throwOnError) throw new Error("Sign in first.");
@@ -909,22 +992,32 @@ async function queueProspects(ids, { allowUnloaded = false, throwOnError = false
     });
     await batch.commit();
     gotoView("jobs");
-    showToast(validIds.length + " prospects saved to the queue.");
+    setQueueNotice(validIds.length + " prospect" + (validIds.length === 1 ? " is" : "s are") + " saved. Starting the background worker…");
     const base = getBackendUrl();
+    let started = false;
     if (base) {
-      workerRequest("/api/wake", {
-        method: "POST",
-        body: JSON.stringify({ job_id: jobRef.id })
-      }).then(() => {
-        setWorkerStatus(true, "Worker connected");
-      }).catch((error) => {
+      try {
+        await workerRequest("/api/wake", {
+          method: "POST",
+          body: JSON.stringify({ job_id: jobRef.id })
+        }, { attempts: 1, timeoutMs: 12000 });
+        started = true;
+        setWorkerStatus(true, "Worker accepted the job.", "Worker connected");
+        setQueueNotice("Worker accepted " + validIds.length + " prospect" + (validIds.length === 1 ? "" : "s") + ". Processing continues on the server if you close this page.");
+        showToast("Crawling started for " + validIds.length + " prospect" + (validIds.length === 1 ? "" : "s") + ".");
+      } catch (error) {
         recordClientError("wake queued job", error);
-        setWorkerStatus(false, "Saved safely; worker will resume it after the next wake");
-      });
+        const detail = friendlyError(error);
+        setWorkerStatus(false, detail, "Worker setup needed");
+        setQueueNotice("Saved safely in Firestore, but crawling did not start: " + detail, true);
+        showToast("Saved, but crawling did not start: " + detail, true);
+      }
     } else {
-      setWorkerStatus(false, "Saved; add worker URL in Settings");
+      setWorkerStatus(false, "Add the Hugging Face worker URL in Settings.", "Worker setup needed");
+      setQueueNotice("Saved safely in Firestore, but the worker URL is missing. Open Settings and save the Hugging Face worker URL.", true);
+      showToast("Prospects saved, but crawling did not start. Add the worker URL in Settings.", true);
     }
-    return true;
+    return started;
   } catch (error) {
     if (throwOnError) throw error;
     showToast(friendlyError(error), true);
@@ -942,8 +1035,8 @@ async function saveManualProspect(event) {
     event.currentTarget.classList.add("hidden");
     if (result.ids?.length && $("#autoQueueImports").checked) {
       try {
-        await queueIdsInBatches(result.ids);
-        showToast("Prospect saved and queued for lookup.");
+        const started = await queueIdsInBatches(result.ids);
+        if (started) showToast("Prospect saved and crawling started.");
       } catch (error) {
         showToast("Prospect saved, but queuing failed: " + friendlyError(error), true);
       }
@@ -1008,8 +1101,8 @@ function exportCSV() {
   URL.revokeObjectURL(url);
 }
 
-function setWorkerStatus(online, message) {
-  const text = online ? "Worker connected" : "Worker not connected";
+function setWorkerStatus(online, message, label = "") {
+  const text = label || (online ? "Worker connected" : "Worker not connected");
   $("#workerBadge").innerHTML = "<i></i>" + text;
   $("#workerBadge").classList.toggle("offline", !online);
   $("#queueWorkerStatus").classList.toggle("offline", !online);
@@ -1056,7 +1149,7 @@ async function resilientFetch(url, options = {}, { attempts = 2, timeoutMs = 200
   throw lastError || new Error("Network request failed.");
 }
 
-async function workerRequest(path, options = {}) {
+async function workerRequest(path, options = {}, requestOptions = {}) {
   const base = getBackendUrl();
   if (!base) throw new Error("Save the background worker URL in Settings first.");
   if (!currentUser) throw new Error("Sign in first.");
@@ -1068,7 +1161,7 @@ async function workerRequest(path, options = {}) {
       ...(options.headers || {}),
       "Authorization": "Bearer " + token
     }
-  }, { attempts: 2, timeoutMs: 25000, context: "worker " + path });
+  }, { attempts: requestOptions.attempts ?? 2, timeoutMs: requestOptions.timeoutMs ?? 25000, context: "worker " + path });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.detail || "The worker request failed.");
   return data;
@@ -1179,7 +1272,6 @@ async function refreshVerification() {
     await auth.currentUser.reload();
     await auth.currentUser.getIdToken(true);
     currentUser = auth.currentUser;
-    $("#adminUid").value = currentUser.uid;
     updateAdminVisibility();
     $("#verificationMessage").textContent = currentUser.emailVerified ? "Verified. Admin access is ready." : "The account service still shows this email as unverified. Open the verification link, then tap again.";
     if (isAdminUser()) showToast("Admin access is ready.");
@@ -1196,10 +1288,16 @@ async function checkBackend() {
     const response = await resilientFetch(base + "/health", {}, { attempts: 2, timeoutMs: 15000, context: "worker health" });
     const data = await response.json();
     if (!response.ok || data.status !== "ok") throw new Error(data.message || "Worker did not return ready status.");
-    setWorkerStatus(Boolean(data.worker_ready), data.worker_ready ? "Worker is ready." : "Backend is online; worker credentials are not configured.");
-    showToast(data.worker_ready ? "Worker is online." : "Backend is online, but needs its server secrets.", !data.worker_ready);
+    const ready = Boolean(data.worker_ready);
+    const message = ready
+      ? "Worker is online and ready. Your two configured admin emails are recognized automatically."
+      : "Space is online, but Firebase is not initialized. Add the FIREBASE_SERVICE_ACCOUNT_JSON secret in Hugging Face Space Settings. No ADMIN_UID is needed for the two admin emails.";
+    setWorkerStatus(ready, message, ready ? "Worker connected" : "Worker setup needed");
+    setQueueNotice(ready ? "Worker is online and ready to process saved jobs." : message, !ready);
+    showToast(ready ? "Worker is online." : "Backend is online, but needs its Firebase service-account secret.", !ready);
   } catch (error) {
-    setWorkerStatus(false, error.message || "Could not reach the worker.");
+    setWorkerStatus(false, error.message || "Could not reach the worker.", "Worker unavailable");
+    setQueueNotice(error.message || "Could not reach the worker.", true);
     showToast(error.message || "Could not reach the worker.", true);
   }
 }
@@ -1282,8 +1380,8 @@ async function saveLocalResult(index) {
     const result = await saveProspects([data]);
     if (result.ids?.length && $("#autoQueueImports").checked) {
       try {
-        await queueIdsInBatches(result.ids);
-        showToast("Saved and queued for lookup.");
+        const started = await queueIdsInBatches(result.ids);
+        if (started) showToast("Saved and crawling started.");
       } catch (error) {
         showToast("Saved, but queuing failed: " + friendlyError(error), true);
       }
@@ -1298,12 +1396,19 @@ async function importExtensionCapture(file) {
     const parsed = JSON.parse(await file.text());
     const items = Array.isArray(parsed) ? parsed : [parsed];
     const result = await saveProspects(items, { fromCapture: true });
+    let started = false;
     if ($("#autoQueueImports").checked && result.ids?.length) {
-      try { await queueIdsInBatches(result.ids); }
+      try { started = await queueIdsInBatches(result.ids); }
       catch (error) { throw new Error("Capture was imported, but queuing failed: " + friendlyError(error)); }
     }
     gotoView("prospects");
-    showToast(( $("#autoQueueImports").checked ? "Imported and queued " : "Imported ") + result.added + " captured page(s).");
+    const autoQueue = $("#autoQueueImports").checked && Boolean(result.ids?.length);
+    showToast(!autoQueue
+      ? "Imported " + result.added + " captured page(s)."
+      : started
+        ? "Imported and started crawling " + result.added + " captured page(s)."
+        : "Imported " + result.added + " captured page(s). Jobs are saved, but the worker needs setup before crawling can start.",
+      autoQueue && !started);
   } catch (error) { showToast(friendlyError(error), true); }
 }
 
@@ -1361,8 +1466,21 @@ function initEvents() {
   $("#categoryFilter").addEventListener("change", renderProspects);
   $("#websiteFilter").addEventListener("change", renderProspects);
   $("#statusFilter").addEventListener("change", renderProspects);
-  $("#selectAll").addEventListener("change", (event) => $$(".lead-check").forEach((item) => { item.checked = event.target.checked; }));
-  $("#queueSelected").addEventListener("click", () => queueProspects(selectedProspectIds()));
+  $("#selectAll").addEventListener("change", (event) => {
+    $$(".lead-check").forEach((item) => { item.checked = event.target.checked; });
+    updateSelectionSummary();
+  });
+  $("#leadRows").addEventListener("change", (event) => {
+    if (event.target.matches(".lead-check")) updateSelectionSummary();
+  });
+  $("#selectAllVisible").addEventListener("click", () => {
+    const boxes = $$(".lead-check");
+    const select = boxes.length > 0 && boxes.some((item) => !item.checked);
+    boxes.forEach((item) => { item.checked = select; });
+    updateSelectionSummary();
+  });
+  $("#queueSelected").addEventListener("click", startSelectedCrawl);
+  $("#startQueuedJobs").addEventListener("click", startQueuedJobs);
   $("#exportLeads").addEventListener("click", exportCSV);
   $("#exportBackup").addEventListener("click", exportBackupJSON);
   $("#showAddForm").addEventListener("click", () => $("#addProspectForm").classList.remove("hidden"));
@@ -1395,16 +1513,6 @@ function initEvents() {
     showToast(value ? "Worker URL saved." : "Worker URL cleared.");
   });
   $("#checkBackend").addEventListener("click", checkBackend);
-  $("#copyAdminUid").addEventListener("click", async () => {
-    if (!currentUser?.uid) return;
-    try {
-      await navigator.clipboard.writeText(currentUser.uid);
-      showToast("Account UID copied. Paste it into the worker's ADMIN_UID setting.");
-    } catch {
-      $("#adminUid").select();
-      showToast("Select and copy this UID, then paste it into the worker's ADMIN_UID setting.");
-    }
-  });
   $("#resendVerification").addEventListener("click", resendVerification);
   $("#refreshVerification").addEventListener("click", refreshVerification);
   $("#refreshAdminAccounts").addEventListener("click", loadAdminAccounts);

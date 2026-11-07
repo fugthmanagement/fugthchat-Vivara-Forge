@@ -12,6 +12,7 @@ from firebase_admin import firestore
 from registry import REGISTRIES, state_of, import_meta
 from enrichment import FetchResult, _extract, _profile_with_contacts
 from pdf_reader import pdf_text
+from image_tools import archive_filename, archive_to_drive, discover_public_images, download_as_jpeg
 
 class StateUpdate(BaseModel):
     prospect_ids: list[str] = Field(min_length=1,max_length=400)
@@ -30,6 +31,15 @@ class MapSettings(BaseModel):
 
 class GeocodeRequest(BaseModel):
     prospect_ids: list[str] = Field(min_length=1,max_length=50)
+
+class ImageConsent(BaseModel):
+    confirmed: bool
+    note: str = Field(default='',max_length=300)
+
+class ImageArchiveRequest(BaseModel):
+    image_url: str = Field(min_length=8,max_length=2048)
+    source_page_url: str = Field(min_length=8,max_length=2048)
+    label: str = Field(default='Public business image',max_length=180)
 
 def install(app, ctx, account):
     reverse_lock = asyncio.Lock()
@@ -81,6 +91,60 @@ def install(app, ctx, account):
                 tx.update(ref,{'state':payload.state,'updatedAt':firestore.SERVER_TIMESTAMP})
         save(ctx.db.transaction())
         return {'updated':len(refs)}
+
+    @app.put('/api/prospects/{prospect_id}/image-consent')
+    def image_consent(prospect_id: str, payload: ImageConsent, authorization: str | None = Header(default=None)):
+        user = account(authorization)
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',prospect_id):
+            raise HTTPException(404,'Prospect not found.')
+        ref = ctx._prospect_ref(user['uid'],prospect_id)
+        if not ref.get().exists:
+            raise HTTPException(404,'Prospect not found.')
+        ref.update({'imageConsent':payload.confirmed,'imageConsentNote':payload.note.strip(),'imageConsentUpdatedAt':firestore.SERVER_TIMESTAMP,'updatedAt':firestore.SERVER_TIMESTAMP})
+        return {'confirmed':payload.confirmed}
+
+    @app.get('/api/prospects/{prospect_id}/images')
+    async def discover_images(prospect_id: str, authorization: str | None = Header(default=None)):
+        user = account(authorization)
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',prospect_id):
+            raise HTTPException(404,'Prospect not found.')
+        snapshot = await asyncio.to_thread(ctx._prospect_ref(user['uid'],prospect_id).get)
+        if not snapshot.exists:
+            raise HTTPException(404,'Prospect not found.')
+        row = snapshot.to_dict() or {}
+        if row.get('imageConsent') is not True:
+            raise HTTPException(403,'Confirm business consent before looking for public images.')
+        candidates, errors = await discover_public_images(row, import_meta)
+        return {'prospect_id':prospect_id,'business_name':row.get('businessName',''),'candidates':candidates,'errors':errors,'consent_confirmed':True}
+
+    @app.post('/api/prospects/{prospect_id}/images/archive')
+    async def archive_image(prospect_id: str, payload: ImageArchiveRequest, authorization: str | None = Header(default=None)):
+        user = account(authorization)
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',prospect_id):
+            raise HTTPException(404,'Prospect not found.')
+        prospect_ref = ctx._prospect_ref(user['uid'],prospect_id)
+        snapshot = await asyncio.to_thread(prospect_ref.get)
+        if not snapshot.exists:
+            raise HTTPException(404,'Prospect not found.')
+        row = snapshot.to_dict() or {}
+        if row.get('imageConsent') is not True:
+            raise HTTPException(403,'Confirm business consent before archiving an image.')
+        candidates, _ = await discover_public_images(row, import_meta)
+        approved = next((item for item in candidates if item['imageUrl'] == payload.image_url and item['sourcePageUrl'] == payload.source_page_url),None)
+        if not approved:
+            raise HTTPException(400,'Choose an image returned from this business’s current public source pages.')
+        key = hashlib.sha256((prospect_id+'|'+payload.image_url).encode()).hexdigest()[:40]
+        candidate_ref = ctx.db.collection('users').document(user['uid']).collection('candidates').document('media_'+key)
+        existing = await asyncio.to_thread(candidate_ref.get)
+        if existing.exists:
+            return {'saved':False,'message':'This approved image is already archived.','asset':existing.to_dict() or {}}
+        jpeg, details = await download_as_jpeg(payload.image_url)
+        drive = await asyncio.to_thread(archive_to_drive,jpeg,archive_filename(row,payload.image_url))
+        digest = hashlib.sha256(jpeg).hexdigest()
+        asset = {'candidateType':'media_asset','prospectId':prospect_id,'businessName':row.get('businessName',''),'sourceRoute':'consented_public_image','sourceUrl':payload.source_page_url,'imageUrl':payload.image_url,'label':approved.get('label') or payload.label,'driveFileId':drive['id'],'driveFileName':drive.get('name',''),'mimeType':'image/jpeg','sha256':digest,'width':details['width'],'height':details['height'],'requiresReview':True,'consentConfirmed':True,'isCurrent':True,'createdAt':firestore.SERVER_TIMESTAMP}
+        await asyncio.to_thread(candidate_ref.set,asset)
+        await asyncio.to_thread(prospect_ref.update,{'mediaAssetsCount':firestore.Increment(1),'updatedAt':firestore.SERVER_TIMESTAMP})
+        return {'saved':True,'message':'Approved image converted to JPEG and archived privately.','asset':{**asset,'driveFileId':drive['id']}}
 
     @app.post('/api/prospects/{prospect_id}/pdf')
     async def upload(prospect_id: str, payload: PdfUpload, authorization: str | None = Header(default=None)):

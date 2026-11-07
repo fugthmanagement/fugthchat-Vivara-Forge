@@ -4,7 +4,19 @@ export function stateOf(row) {
  const direct=STATES.find(s=>s.code===explicit||s.name.toUpperCase()===explicit);
  if(direct)return direct.code;
  let meta={};try{meta=JSON.parse(String(row.notes||'').split('[VF-META]')[1]||'{}')}catch{}
- const texts=[row.city,row.address,row.full_address,row.formatted_address,meta.address].filter(Boolean).map(String);
- const matches=texts.flatMap(text=>[...text.matchAll(/(?:,|\s)([A-Z]{2})(?=\s+\d{5}(?:-\d{4})?\b|\s*(?:,\s*(?:USA|US|United States))?\s*$)/g)]).map(m=>m[1]).filter(c=>STATES.some(s=>s.code===c));
- return new Set(matches).size===1?matches[0]:'';
+ // Imports arrive in many forms: "Miami, FL", "Miami, Florida", a full
+ // address, or a separate state field. Recognize a state only when exactly
+ // one known state is present; do not infer it from a phone area code.
+ const texts=[row.city,row.address,row.full_address,row.formatted_address,meta.address,explicit].filter(Boolean).map(value=>String(value).toUpperCase());
+ const matches=new Set();
+ for(const text of texts){
+   for(const state of STATES){
+     const name=new RegExp('\\b'+state.name.toUpperCase().replace(/[.*+?^${}()|[\\]\\\\]/g,'\\$&')+'\\b');
+     // Abbreviations are accepted only as the final address/city segment.
+     // This avoids mistaking street suffixes like "Ct" for Connecticut.
+     const code=new RegExp('(?:^|,\\s*)'+state.code+'(?=\\s*(?:\\d{5}(?:-\\d{4})?|,?\\s*(?:USA|US|UNITED STATES))?\\s*$)');
+     if(name.test(text)||code.test(text))matches.add(state.code);
+   }
+ }
+ return matches.size===1?[...matches][0]:'';
 }

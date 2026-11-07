@@ -5,14 +5,18 @@ import hashlib
 import re
 import csv
 import io
+import zipfile
+import json
+from datetime import datetime, timezone
 import httpx
 from fastapi import Header, HTTPException
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from firebase_admin import firestore
 from registry import REGISTRIES, state_of, import_meta
 from enrichment import FetchResult, _extract, _profile_with_contacts
 from pdf_reader import pdf_text
-from image_tools import archive_filename, archive_to_drive, discover_public_images, download_as_jpeg
+from image_tools import archive_approved_image, discover_public_images, download_as_jpeg
 
 class StateUpdate(BaseModel):
     prospect_ids: list[str] = Field(min_length=1,max_length=400)
@@ -40,6 +44,9 @@ class ImageArchiveRequest(BaseModel):
     image_url: str = Field(min_length=8,max_length=2048)
     source_page_url: str = Field(min_length=8,max_length=2048)
     label: str = Field(default='Public business image',max_length=180)
+
+class ImageZipRequest(BaseModel):
+    image_urls: list[str] = Field(min_length=1,max_length=12)
 
 def install(app, ctx, account):
     reverse_lock = asyncio.Lock()
@@ -139,12 +146,47 @@ def install(app, ctx, account):
         if existing.exists:
             return {'saved':False,'message':'This approved image is already archived.','asset':existing.to_dict() or {}}
         jpeg, details = await download_as_jpeg(payload.image_url)
-        drive = await asyncio.to_thread(archive_to_drive,jpeg,archive_filename(row,payload.image_url))
+        drive = await asyncio.to_thread(archive_approved_image,jpeg,row,payload.source_page_url,approved.get('label') or payload.label)
         digest = hashlib.sha256(jpeg).hexdigest()
-        asset = {'candidateType':'media_asset','prospectId':prospect_id,'businessName':row.get('businessName',''),'sourceRoute':'consented_public_image','sourceUrl':payload.source_page_url,'imageUrl':payload.image_url,'label':approved.get('label') or payload.label,'driveFileId':drive['id'],'driveFileName':drive.get('name',''),'mimeType':'image/jpeg','sha256':digest,'width':details['width'],'height':details['height'],'requiresReview':True,'consentConfirmed':True,'isCurrent':True,'createdAt':firestore.SERVER_TIMESTAMP}
+        asset = {'candidateType':'media_asset','prospectId':prospect_id,'businessName':row.get('businessName',''),'sourceRoute':'consented_public_image','sourceUrl':payload.source_page_url,'imageUrl':payload.image_url,'label':approved.get('label') or payload.label,'driveFileId':drive['id'],'driveFileName':drive.get('name',''),'archiveProvider':drive.get('archive','drive'),'archiveImageId':drive.get('imageId',''),'mimeType':'image/jpeg','sha256':digest,'width':details['width'],'height':details['height'],'requiresReview':True,'consentConfirmed':True,'isCurrent':True,'createdAt':firestore.SERVER_TIMESTAMP}
         await asyncio.to_thread(candidate_ref.set,asset)
         await asyncio.to_thread(prospect_ref.update,{'mediaAssetsCount':firestore.Increment(1),'updatedAt':firestore.SERVER_TIMESTAMP})
         return {'saved':True,'message':'Approved image converted to JPEG and archived privately.','asset':{**asset,'driveFileId':drive['id']}}
+
+    @app.post('/api/prospects/{prospect_id}/images/zip')
+    async def download_images_zip(prospect_id: str, payload: ImageZipRequest, authorization: str | None = Header(default=None)):
+        user = account(authorization)
+        if not re.fullmatch(r'[A-Za-z0-9_-]{1,128}',prospect_id):
+            raise HTTPException(404,'Prospect not found.')
+        snapshot = await asyncio.to_thread(ctx._prospect_ref(user['uid'],prospect_id).get)
+        if not snapshot.exists:
+            raise HTTPException(404,'Prospect not found.')
+        row = snapshot.to_dict() or {}
+        if row.get('imageConsent') is not True:
+            raise HTTPException(403,'Confirm business consent before downloading public images.')
+        candidates, _ = await discover_public_images(row, import_meta)
+        allowed = {item['imageUrl'] for item in candidates}
+        requested = list(dict.fromkeys(payload.image_urls))
+        if any(url not in allowed for url in requested):
+            raise HTTPException(400,'Choose only images returned from this business’s current public source pages.')
+        contents = []
+        total_bytes = 0
+        for url in requested:
+            jpeg, details = await download_as_jpeg(url)
+            total_bytes += len(jpeg)
+            if total_bytes > 25_000_000:
+                raise HTTPException(413,'Choose fewer images. A device ZIP is limited to 25 MB.')
+            contents.append((url,jpeg,details))
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive,'w',compression=zipfile.ZIP_DEFLATED,compresslevel=6) as bundle:
+            manifest = {'businessName':row.get('businessName',''),'consentConfirmed':True,'createdAt':datetime.now(timezone.utc).isoformat(),'images':[]}
+            for index,(url,jpeg,details) in enumerate(contents,1):
+                name = archive_filename(row,url).replace('.jpg',f'-{index}.jpg')
+                bundle.writestr(name,jpeg)
+                manifest['images'].append({'file':name,'sourceUrl':url,'width':details['width'],'height':details['height'],'mimeType':'image/jpeg'})
+            bundle.writestr('source-manifest.json',json.dumps(manifest,indent=2))
+        safe = re.sub(r'[^A-Za-z0-9_-]+','-',str(row.get('businessName') or 'business')).strip('-')[:80] or 'business'
+        return Response(content=archive.getvalue(),media_type='application/zip',headers={'Content-Disposition':f'attachment; filename="{safe}-public-images.zip"','Cache-Control':'no-store'})
 
     @app.post('/api/prospects/{prospect_id}/pdf')
     async def upload(prospect_id: str, payload: PdfUpload, authorization: str | None = Header(default=None)):

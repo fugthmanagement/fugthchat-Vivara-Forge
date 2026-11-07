@@ -35,7 +35,7 @@ async def review_candidates(business: dict, candidates: list[dict]) -> list[dict
             })
             if response.status_code != 200:
                 return candidates
-            completion = str(response.json().get('text') or response.json().get('response') or response.json().get('message') or '')
+            completion = str(response.json().get('answer') or response.json().get('text') or response.json().get('response') or response.json().get('message') or '')
         labels = {}
         for email, verdict in re.findall(r'([A-Z0-9.!#$%&\'*+/=?^_`{|}~-]+@[A-Z0-9.-]+)\s*\|\s*(supported|uncertain|unsupported)', completion, re.I):
             labels[email.lower()] = verdict.lower()

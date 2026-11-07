@@ -45,6 +45,8 @@ let adminAccounts = [];
 let savedProspectMap = null;
 let activeQueueTab = "batches";
 let activeJobId = "";
+let activeImageTab = "discover";
+let imageCandidates = [];
 
 function safeStorageGet(key, fallback = "") {
   try { return localStorage.getItem(key) ?? fallback; }
@@ -167,6 +169,7 @@ function beginWorkspace(user) {
     prospectRows = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
     refreshCategoryFilter();
     renderProspects();
+    refreshImageProspects();
     if (activeJobId) renderJobDetail();
     savedProspectMap?.render();
     updateMetrics();
@@ -178,6 +181,7 @@ function beginWorkspace(user) {
   stopCandidates = onSnapshot(userCollection("candidates"), (snapshot) => {
     candidateRows = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
     renderProspects();
+    renderImageArchive();
     if (activeJobId) renderJobDetail();
     savedProspectMap?.render();
     updateMetrics();
@@ -281,7 +285,7 @@ function gotoView(name) {
   $$(".nav-item[data-view]").forEach((item) => item.classList.toggle("active", item.dataset.view === name));
   $$(".mobile-nav button").forEach((item) => item.classList.toggle("active", item.dataset.view === name));
   const title = name.charAt(0).toUpperCase() + name.slice(1).replace("companion", "Browser companion");
-  $("#pageTitle").textContent = name === "local" ? "Local discovery" : name === "jobs" ? "Enrichment queue" : name === "admin" ? "Admin dashboard" : title;
+  $("#pageTitle").textContent = name === "local" ? "Local discovery" : name === "jobs" ? "Enrichment queue" : name === "images" ? "Image downloader" : name === "admin" ? "Admin dashboard" : title;
   if (name === "map") savedProspectMap?.open();
   if (name === "admin" && isAdminUser()) loadAdminDashboard();
   window.scrollTo({ top: 0, behavior: "smooth" });
@@ -405,7 +409,17 @@ function renderProspects() {
   $("#leadCountBadge").textContent = String(prospectRows.length);
   $("#emptyLeads").classList.toggle("visible", prospectRows.length === 0);
   if (!filtered.length) {
-    body.innerHTML = '<tr><td colspan="7" class="empty-state">' + (prospectRows.length ? "No prospects match these filters." : "Your list is empty.") + "</td></tr>";
+    const activeFilters = [
+      stateFilter && (stateFilter === "unknown" ? "state missing" : STATES.find((item) => item.code === stateFilter)?.name),
+      category && "niche: " + category,
+      websiteFilter && (websiteFilter === "has" ? "has website" : "no website"),
+      status && (labels[status] || status),
+      needle && 'search: “' + needle + '”'
+    ].filter(Boolean);
+    const message = prospectRows.length
+      ? "No prospects match " + (activeFilters.join(" + ") || "these filters") + ". Clear a filter to see more leads."
+      : "Your list is empty.";
+    body.innerHTML = '<tr><td colspan="7" class="empty-state">' + escapeHtml(message) + "</td></tr>";
     updateSelectionSummary();
     return;
   }
@@ -531,6 +545,113 @@ function renderJobs() {
   }).join("");
   renderJobDetail();
   setQueueTab(activeQueueTab);
+}
+
+function mediaAssetsFor(prospectId = "") {
+  return candidateRows.filter((item) => item.candidateType === "media_asset" && item.isCurrent !== false && (!prospectId || item.prospectId === prospectId));
+}
+
+function refreshImageProspects() {
+  const select = $("#imageProspect");
+  if (!select) return;
+  const previous = select.value;
+  const options = prospectRows.map((row) => '<option value="' + escapeHtml(row.id) + '">' + escapeHtml(row.businessName || "Unnamed business") + (stateOf(row) ? ' · ' + stateOf(row) : '') + '</option>').join("");
+  select.innerHTML = '<option value="">Choose a saved business</option>' + options;
+  if (prospectRows.some((row) => row.id === previous)) select.value = previous;
+  syncImageConsent();
+  renderImageArchive();
+}
+
+function selectedImageProspect() {
+  return prospectRows.find((row) => row.id === $("#imageProspect")?.value) || null;
+}
+
+function syncImageConsent() {
+  const prospect = selectedImageProspect();
+  const consent = $("#imageConsent");
+  const note = $("#imageConsentNote");
+  if (!consent || !note) return;
+  consent.checked = prospect?.imageConsent === true;
+  note.value = prospect?.imageConsentNote || "";
+  $("#discoverImages").disabled = !prospect;
+  if (!prospect) {
+    imageCandidates = [];
+    renderImageCandidates();
+  }
+}
+
+function renderImageCandidates() {
+  const container = $("#imageCandidates");
+  if (!imageCandidates.length) {
+    container.innerHTML = '<div class="empty-help visible"><div class="empty-illustration">▧</div><b>No image candidates loaded</b><p>Choose a consented business, then use Find public images.</p></div>';
+    return;
+  }
+  container.innerHTML = imageCandidates.map((item, index) => '<article class="image-candidate"><img src="' + escapeHtml(item.imageUrl) + '" alt="' + escapeHtml(item.label || "Public business image") + '" loading="lazy" referrerpolicy="no-referrer"><div class="image-candidate-body"><b>' + escapeHtml(item.label || "Public business image") + '</b><small>' + escapeHtml(item.sourceKind || "public page") + ' · ' + escapeHtml(item.sourcePageUrl || "") + '</small><button class="mini-button" type="button" data-archive-image="' + index + '">Archive approved image</button></div></article>').join("");
+}
+
+function renderImageArchive() {
+  const container = $("#imageArchive");
+  if (!container) return;
+  const selected = $("#imageProspect")?.value || "";
+  const assets = mediaAssetsFor(selected);
+  if (!assets.length) {
+    container.innerHTML = '<div class="empty-help visible"><div class="empty-illustration">▧</div><b>No approved images saved</b><p>Approved images are converted to JPEG and archived privately here.</p></div>';
+    return;
+  }
+  container.innerHTML = assets.map((asset) => '<article class="image-candidate"><img src="' + escapeHtml(asset.imageUrl || "") + '" alt="' + escapeHtml(asset.label || "Archived business image") + '" loading="lazy" referrerpolicy="no-referrer"><div class="image-candidate-body"><b>' + escapeHtml(asset.businessName || "Business image") + '</b><div class="asset-meta"><span>' + escapeHtml(asset.driveFileName || "Archived JPEG") + '</span><span>' + escapeHtml((asset.width || "?") + " × " + (asset.height || "?")) + ' · consent recorded</span><a class="inline-link" href="' + escapeHtml(asset.sourceUrl || "#") + '" target="_blank" rel="noopener">Open public source ↗</a></div></div></article>').join("");
+}
+
+function setImageTab(tab) {
+  activeImageTab = tab === "archive" ? "archive" : "discover";
+  $$("[data-image-tab]").forEach((button) => button.classList.toggle("active", button.dataset.imageTab === activeImageTab));
+  $("#imageDiscoverPanel").classList.toggle("hidden", activeImageTab !== "discover");
+  $("#imageArchivePanel").classList.toggle("hidden", activeImageTab !== "archive");
+  if (activeImageTab === "archive") renderImageArchive();
+}
+
+async function saveImageConsent() {
+  const prospect = selectedImageProspect();
+  if (!prospect) return;
+  const confirmed = $("#imageConsent").checked;
+  const note = $("#imageConsentNote").value.trim();
+  try {
+    await workerRequest('/api/prospects/' + encodeURIComponent(prospect.id) + '/image-consent', { method: 'PUT', body: JSON.stringify({ confirmed, note }) });
+    $("#imageMessage").textContent = confirmed ? "Consent recorded. Public image discovery is enabled for this business." : "Consent removed. Existing archive records remain, but no new images can be archived.";
+  } catch (error) {
+    $("#imageConsent").checked = prospect.imageConsent === true;
+    $("#imageMessage").textContent = friendlyError(error);
+  }
+}
+
+async function discoverImages() {
+  const prospect = selectedImageProspect();
+  if (!prospect) return showToast("Choose a business first.", true);
+  if (!$("#imageConsent").checked) return showToast("Record the business’s permission before looking for public images.", true);
+  const button = $("#discoverImages");
+  button.disabled = true;
+  $("#imageMessage").textContent = "Reading saved public source pages…";
+  try {
+    const data = await workerRequest('/api/prospects/' + encodeURIComponent(prospect.id) + '/images', { method: 'GET' }, { attempts: 1, timeoutMs: 60000 });
+    imageCandidates = Array.isArray(data.candidates) ? data.candidates : [];
+    renderImageCandidates();
+    $("#imageMessage").textContent = imageCandidates.length + " reviewable public image candidate(s) found." + (data.errors?.length ? " Some supplied pages could not be read." : "");
+  } catch (error) {
+    imageCandidates = [];
+    renderImageCandidates();
+    $("#imageMessage").textContent = friendlyError(error);
+  } finally { button.disabled = false; }
+}
+
+async function archiveImage(index) {
+  const prospect = selectedImageProspect();
+  const candidate = imageCandidates[Number(index)];
+  if (!prospect || !candidate || !$("#imageConsent").checked) return showToast("Choose a consented business and a listed image first.", true);
+  $("#imageMessage").textContent = "Converting and archiving the approved image…";
+  try {
+    const result = await workerRequest('/api/prospects/' + encodeURIComponent(prospect.id) + '/images/archive', { method: 'POST', body: JSON.stringify({ image_url: candidate.imageUrl, source_page_url: candidate.sourcePageUrl, label: candidate.label || "Public business image" }) }, { attempts: 1, timeoutMs: 90000 });
+    $("#imageMessage").textContent = result.message || "Approved image archived.";
+    setImageTab("archive");
+  } catch (error) { $("#imageMessage").textContent = friendlyError(error); }
 }
 
 function normalizeImportKey(value) {
@@ -1366,7 +1487,10 @@ async function checkBackend() {
     const data = await response.json();
     if (!response.ok || data.status !== "ok") throw new Error(data.message || "Worker did not return ready status.");
     const ready = Boolean(data.worker_ready);
-    $("#routeDiagnostics").textContent = data.version ? "Worker " + data.version + ". Web discovery: " + (data.routes?.web_search ? "configured" : "not configured") + ". Registry/PDF access is checked per source." : "Worker update required: the running backend does not include the registry repair yet. Upload the latest hf-space files.";
+    const archive = data.image_downloader;
+    $("#routeDiagnostics").textContent = data.version
+      ? "Worker " + data.version + ". Web discovery: " + (data.routes?.web_search ? "configured" : "not configured") + ". Registry/PDF access is checked per source. Image archive: " + (archive?.drive_archive_configured ? "ready" : "needs archive-folder setup") + "."
+      : "Worker update required: the running backend does not include the registry repair yet. Upload the latest hf-space files.";
     const message = ready
       ? "Worker is online and ready. Your two configured admin emails are recognized automatically."
       : "Space is online, but Firebase is not initialized. Add the FIREBASE_SERVICE_ACCOUNT_JSON secret in Hugging Face Space Settings. No ADMIN_UID is needed for the two admin emails.";
@@ -1504,6 +1628,7 @@ function buildMobileNav() {
     ["map", "⌖", "Map"],
     ["local", "+", "Find"],
     ["jobs", "◷", "Queue"],
+    ["images", "▧", "Images"],
     ["settings", "⚙", "Settings"]
   ];
   if (isAdminUser()) items.splice(items.length - 1, 0, ["admin", "♙", "Admin"]);
@@ -1528,6 +1653,10 @@ function initEvents() {
     if (openJob) openJobDetail(openJob.dataset.openJob);
     const queueTab = event.target.closest("[data-queue-tab]");
     if (queueTab && !queueTab.disabled) setQueueTab(queueTab.dataset.queueTab);
+    const imageTab = event.target.closest("[data-image-tab]");
+    if (imageTab) setImageTab(imageTab.dataset.imageTab);
+    const archiveImageButton = event.target.closest("[data-archive-image]");
+    if (archiveImageButton) archiveImage(archiveImageButton.dataset.archiveImage);
     const feedback = event.target.closest("[data-feedback]");
     if (feedback) submitFeedback(feedback.dataset.feedback, feedback.dataset.label);
     const saveLocal = event.target.closest("[data-save-local]");
@@ -1566,6 +1695,10 @@ function initEvents() {
   });
   $("#queueSelected").addEventListener("click", startSelectedCrawl);
   $("#startQueuedJobs").addEventListener("click", startQueuedJobs);
+  $("#imageProspect").addEventListener("change", syncImageConsent);
+  $("#imageConsent").addEventListener("change", saveImageConsent);
+  $("#imageConsentNote").addEventListener("change", saveImageConsent);
+  $("#discoverImages").addEventListener("click", discoverImages);
   $("#exportLeads").addEventListener("click", exportCSV);
   $("#exportBackup").addEventListener("click", exportBackupJSON);
   $("#showAddForm").addEventListener("click", () => $("#addProspectForm").classList.remove("hidden"));

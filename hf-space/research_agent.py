@@ -32,6 +32,8 @@ def plan(prospect: dict, web_search_configured: bool) -> list[Action]:
         actions.append(Action('public_source_reader', 'Read supplied business pages and same-site contact/about pages.', ('public_url',)))
     if web_search_configured:
         actions.append(Action('bounded_web_discovery', 'Discover up to five public business pages for the exact business and location.', ('business_name', 'web_search_key')))
+    if prospect.get('imageConsent') is True:
+        actions.append(Action('consented_public_image_discovery', 'Inspect supplied public business pages for image candidates; archive only a user-approved candidate.', ('recorded_business_consent', 'public_url')))
     actions.append(Action('evidence_fact_check', 'Check candidate evidence against its source text; never create facts.', ('source_evidence',)))
     actions.append(Action('honest_result', 'Return sourced profiles, review candidates, or an explicit missing/blocked/not-found outcome.', ('completed_routes',)))
     return actions

@@ -581,7 +581,7 @@ def health():
         "version": "2026.11.05-routes-2",
         "routes": {"sunbiz": "enabled_access_dependent", "web_search": bool(SEARCH_KEY), "public_pdf": True, "pdf_ocr": True},
         "fact_check_gateway": bool(GATEWAY_URL),
-        "image_downloader": {"enabled": True, "drive_archive_configured": bool(os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip() and os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "")).strip())},
+        "image_downloader": {"enabled": True, "archive_target": "management_os" if bool(os.getenv("MANAGEMENT_MEDIA_API_URL", "").strip() and os.getenv("MANAGEMENT_MEDIA_API_KEY", "").strip()) else ("drive" if bool(os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip() and os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "")).strip()) else "not_configured"), "drive_archive_configured": bool(os.getenv("GOOGLE_DRIVE_FOLDER_ID", "").strip() and os.getenv("GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "")).strip())},
     }
 
 

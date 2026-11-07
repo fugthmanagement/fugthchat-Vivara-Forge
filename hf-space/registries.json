@@ -1,0 +1,359 @@
+[
+  {
+    "code": "AL",
+    "name": "Alabama",
+    "url": "https://www.alabamainteractive.org/sos/welcome.action",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "AK",
+    "name": "Alaska",
+    "url": "https://www.commerce.alaska.gov/web/cbpl/Corporations.aspx",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "AZ",
+    "name": "Arizona",
+    "url": "http://www.azcc.gov/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "AR",
+    "name": "Arkansas",
+    "url": "https://www.sos.arkansas.gov/business-commercial-services-bcs",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "CA",
+    "name": "California",
+    "url": "http://www.sos.ca.gov/business/be/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "CO",
+    "name": "Colorado",
+    "url": "http://www.sos.state.co.us/pubs/business/main.html",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "CT",
+    "name": "Connecticut",
+    "url": "https://portal.ct.gov/SOTS/Business-Services/BSD",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "DE",
+    "name": "Delaware",
+    "url": "http://corp.delaware.gov/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "FL",
+    "name": "Florida",
+    "url": "http://sunbiz.org/",
+    "automation": "sunbiz",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "GA",
+    "name": "Georgia",
+    "url": "https://sos.ga.gov/index.php/corporations",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "HI",
+    "name": "Hawaii",
+    "url": "http://cca.hawaii.gov/breg/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "ID",
+    "name": "Idaho",
+    "url": "https://sosbiz.idaho.gov/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "IL",
+    "name": "Illinois",
+    "url": "https://www.ilsos.gov/departments/business_services/home.html",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "IN",
+    "name": "Indiana",
+    "url": "https://inbiz.in.gov/BOS/Home/Index",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "IA",
+    "name": "Iowa",
+    "url": "http://sos.iowa.gov/business/FormsAndFees.html",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "KS",
+    "name": "Kansas",
+    "url": "https://sos.ks.gov/businesses/register-a-business.html",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "KY",
+    "name": "Kentucky",
+    "url": "http://www.sos.ky.gov/bus/Pages/default.aspx",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "LA",
+    "name": "Louisiana",
+    "url": "https://www.sos.la.gov/business-services/start-a-business",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "ME",
+    "name": "Maine",
+    "url": "https://www.maine.gov/sos/cec/corp/index.html",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "MD",
+    "name": "Maryland",
+    "url": "https://egov.maryland.gov/BusinessExpress/Account/LogOn?ReturnUrl=%2fBusinessExpress%2fUBD%2fCreate",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "MA",
+    "name": "Massachusetts",
+    "url": "https://www.sec.state.ma.us/divisions/corporations/corporations.htm",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "MI",
+    "name": "Michigan",
+    "url": "http://www.michigan.gov/lara/0,4601,7-154-61343_35413---,00.html",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "MN",
+    "name": "Minnesota",
+    "url": "https://sos.mn.gov/business-liens/start-a-business/how-to-register-your-business/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "MS",
+    "name": "Mississippi",
+    "url": "https://www.ms.gov/sos/onestopshop",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "MO",
+    "name": "Missouri",
+    "url": "http://www.sos.mo.gov/business/corporations/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "MT",
+    "name": "Montana",
+    "url": "https://sosmt.gov/business/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "NE",
+    "name": "Nebraska",
+    "url": "http://www.sos.state.ne.us/business/corp_serv/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "NV",
+    "name": "Nevada",
+    "url": "https://www.nvsos.gov/sos/businesses",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "NH",
+    "name": "New Hampshire",
+    "url": "https://www.sos.nh.gov/corporations-0/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "NJ",
+    "name": "New Jersey",
+    "url": "https://www.state.nj.us/treasury/taxation/br1.shtml",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "NM",
+    "name": "New Mexico",
+    "url": "https://enterprise.sos.nm.gov/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "NY",
+    "name": "New York",
+    "url": "http://www.dos.ny.gov/corps/bus_entity_search.html",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "NC",
+    "name": "North Carolina",
+    "url": "https://www.sosnc.gov/divisions/business_registration",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "ND",
+    "name": "North Dakota",
+    "url": "http://www.nd.gov/sos/businessserv/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "OH",
+    "name": "Ohio",
+    "url": "https://www.ohiosos.gov/business",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "OK",
+    "name": "Oklahoma",
+    "url": "https://www.sos.ok.gov/business/default.aspx",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "OR",
+    "name": "Oregon",
+    "url": "http://www.filinginoregon.com/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "PA",
+    "name": "Pennsylvania",
+    "url": "https://file.dos.pa.gov/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "RI",
+    "name": "Rhode Island",
+    "url": "https://www.sos.ri.gov/divisions/business-services",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "SC",
+    "name": "South Carolina",
+    "url": "https://sos.sc.gov/online-filings/business-entities",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "SD",
+    "name": "South Dakota",
+    "url": "https://sdsos.gov/business-services/corporations/default.aspx",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "TN",
+    "name": "Tennessee",
+    "url": "https://sos.tn.gov/business-services",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "TX",
+    "name": "Texas",
+    "url": "http://www.sos.state.tx.us/corp/index.shtml",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "UT",
+    "name": "Utah",
+    "url": "http://corporations.utah.gov/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "VT",
+    "name": "Vermont",
+    "url": "https://sos.vermont.gov/business-services/business-filings/domestic-formation/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "VA",
+    "name": "Virginia",
+    "url": "https://www.scc.virginia.gov/businesses/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "WA",
+    "name": "Washington",
+    "url": "http://www.sos.wa.gov/corps/",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "WV",
+    "name": "West Virginia",
+    "url": "https://business4.wv.gov/startmybusiness/pages/register-your-business.aspx",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "WI",
+    "name": "Wisconsin",
+    "url": "https://apps.dfi.wi.gov/apps/CorpSearch/Search.aspx",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "WY",
+    "name": "Wyoming",
+    "url": "http://soswy.state.wy.us/Business/Business.aspx",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  },
+  {
+    "code": "DC",
+    "name": "District of Columbia",
+    "url": "https://dcra.dc.gov/page/corporation-services-0",
+    "automation": "source_or_search",
+    "directorySource": "https://www.nass.org/business-services/corporate-registration"
+  }
+]

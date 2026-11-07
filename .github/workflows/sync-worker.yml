@@ -1,0 +1,37 @@
+name: Deploy enrichment worker
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['hf-space/**']
+permissions:
+  contents: read
+concurrency:
+  group: worker-deployment
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install upload client
+        run: pip install 'huggingface_hub>=0.27,<2'
+      - name: Sync worker source
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+          token = os.getenv('HF_TOKEN')
+          if not token:
+              raise SystemExit('Add repository secret HF_TOKEN with write access to fugthchat/Vivara-Forge, then rerun this workflow. No files have been deployed.')
+          HfApi(token=token).upload_folder(
+              repo_id='fugthchat/Vivara-Forge', repo_type='space', folder_path='hf-space',
+              allow_patterns=['*.py', '*.json', 'Dockerfile', '.dockerignore', 'requirements.txt', 'README.md'],
+              commit_message='Deploy tested Vivara Forge worker from GitHub',
+          )
+          PY

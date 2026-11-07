@@ -22,6 +22,9 @@ from firebase_admin import auth as firebase_auth, credentials, firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from enrichment import enrich_prospect
+from research_agent import plan_trace
+from llm_review import review_candidates, GATEWAY_URL
+from registry import state_of, missing_route_message
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("vivara-worker")
@@ -254,6 +257,7 @@ async def _process_job(uid: str, job_id: str) -> None:
         )
         completed = 0
         failures = 0
+        result_statuses = dict(job.get('resultStatuses') or {})
         for prospect_id in prospect_ids:
             current_prospect_id = prospect_id
             prospect_ref = _prospect_ref(uid, prospect_id)
@@ -263,14 +267,22 @@ async def _process_job(uid: str, job_id: str) -> None:
                 continue
             prospect = snapshot.to_dict() or {}
             if prospect.get("status") not in {"queued", "running"}:
+                result_statuses.setdefault(prospect_id, prospect.get('status','failed'))
                 completed += 1
                 continue
             await _firestore_call(lambda: prospect_ref.update({"status": "running", "updatedAt": firestore.SERVER_TIMESTAMP}), "start prospect")
             try:
-                candidates, errors, profiles = await enrich_prospect(prospect, SEARCH_KEY)
+                resolved_state = state_of(prospect)
+                if resolved_state and resolved_state != prospect.get("state"):
+                    prospect["state"] = resolved_state
+                    await _firestore_call(lambda: prospect_ref.update({"state":resolved_state}), "recover state")
+                agent_trace = plan_trace(prospect, bool(SEARCH_KEY))
+                candidates, errors, profiles = await asyncio.wait_for(enrich_prospect(prospect, SEARCH_KEY), timeout=240)
+                candidates = await review_candidates(prospect, candidates)
                 extracted_count = len(candidates)
                 candidates = _calibrate_candidates(candidates, feedback_docs, prospect)
                 lookup_run_id = hashlib.sha256(f"{job_id}:{prospect_id}:{time.time_ns()}".encode("utf-8")).hexdigest()[:24]
+                await _firestore_call(lambda: prospect_ref.update({"agentTrace": agent_trace, "updatedAt": firestore.SERVER_TIMESTAMP}), "save research plan")
                 current_evidence_ids: set[str] = set()
                 for item in profiles:
                     profile = {
@@ -336,8 +348,8 @@ async def _process_job(uid: str, job_id: str) -> None:
                 elif errors:
                     failures += 1
                     await _firestore_call(lambda: prospect_ref.update({
-                        "status": "failed",
-                        "lastLookupNote": "No route returned readable evidence. " + " | ".join(errors[:3])[:500],
+                        "status": ("needs_input" if any(e.startswith("NEEDS_INPUT:") for e in errors) else "needs_setup" if any(e.startswith("NEEDS_SETUP:") for e in errors) else "not_found" if all(e.startswith("NOT_FOUND:") for e in errors) else "blocked" if any(e.startswith("BLOCKED:") for e in errors) else "failed"),
+                        "lastLookupNote": " | ".join(errors[:3])[:500],
                         "updatedAt": firestore.SERVER_TIMESTAMP,
                     }), "save route failure")
                 else:
@@ -356,6 +368,8 @@ async def _process_job(uid: str, job_id: str) -> None:
                         "load prior evidence",
                     )
                     for prior in prior_docs:
+                        if (prior.to_dict() or {}).get("sourceRoute") in {"uploaded_filing", "address_geocode"}:
+                            continue
                         if prior.id not in current_evidence_ids and (prior.to_dict() or {}).get("isCurrent") is not False:
                             await _firestore_call(lambda ref=prior.reference: ref.update({
                                 "isCurrent": False,
@@ -371,8 +385,11 @@ async def _process_job(uid: str, job_id: str) -> None:
                 }), "save prospect failure")
             completed += 1
             current_prospect_id = ""
+            final_row = await _firestore_call(prospect_ref.get, "read final prospect status")
+            result_statuses[prospect_id] = (final_row.to_dict() or {}).get('status','failed')
             await _firestore_call(lambda: job_ref.update({
                 "progress": completed,
+                "resultStatuses": result_statuses,
                 "progressPercent": min(100, round(100 * completed / requested)),
                 "updatedAt": firestore.SERVER_TIMESTAMP,
             }), "save job progress")
@@ -412,6 +429,8 @@ async def _run_scheduled_job(uid: str, job_id: str) -> None:
     try:
         async with job_semaphore:
             await _process_job(uid, job_id)
+            if job_id.startswith('api_'):
+                await asyncio.to_thread(settle_api_job, uid, job_id)
     finally:
         if active_jobs.get(key) is current_task:
             active_jobs.pop(key, None)
@@ -467,6 +486,21 @@ async def _start_saved_jobs() -> int:
                     capacity -= 1
                     if capacity == 0:
                         return started
+    if capacity:
+        pointers = await asyncio.to_thread(lambda:list(db.collection("apiPendingJobs").limit(100).stream()))
+        for pointer in pointers:
+            value = pointer.to_dict() or {}
+            uid, job_id = value.get("uid"), value.get("jobId")
+            if not uid or not job_id:
+                continue
+            snapshot = await asyncio.to_thread(_job_ref(uid,job_id).get)
+            job = snapshot.to_dict() or {}
+            if job.get("status") in {"queued","running"}:
+                if capacity and _schedule_job(uid,job_id):
+                    started += 1
+                    capacity -= 1
+            elif snapshot.exists:
+                await asyncio.to_thread(settle_api_job, uid, job_id)
     return started
 
 
@@ -513,12 +547,16 @@ app.add_middleware(
     allow_origins=ORIGINS,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-API-Key", "Idempotency-Key"],
 )
 
 
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
+    length_header = request.headers.get("content-length", "0")
+    if not length_header.isdigit() or int(length_header) > 15_000_000:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail":"Request exceeds 15 MB."}, status_code=413)
     response = await call_next(request)
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
@@ -540,6 +578,9 @@ def health():
         "status": "ok",
         "worker_ready": bool(firebase_ready and (ADMIN_UIDS or ADMIN_EMAILS)),
         "queue_runner": True,
+        "version": "2026.11.05-routes-2",
+        "routes": {"sunbiz": "enabled_access_dependent", "web_search": bool(SEARCH_KEY), "public_pdf": True, "pdf_ocr": True},
+        "fact_check_gateway": bool(GATEWAY_URL),
     }
 
 
@@ -770,3 +811,13 @@ async def local_search(payload: LocalSearchRequest, authorization: str | None = 
             "sourceRoute": "openstreetmap_overpass",
         })
     return {"results": results, "source": "OpenStreetMap contributors", "attribution": "© OpenStreetMap contributors"}
+
+
+# Integration routes share the existing worker and account-owned queue.
+import sys
+from api_access import install as install_api_access, settle_api_job_impl
+from research_routes import install as install_research
+require_account = install_api_access(app, sys.modules[__name__])
+install_research(app, sys.modules[__name__], require_account)
+def settle_api_job(uid, job_id):
+    return settle_api_job_impl(db, uid, job_id)

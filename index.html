@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0a1020">
   <meta name="description" content="Private prospect research with evidence-backed public email, phone, and business contact enrichment.">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https:; img-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https:; img-src 'self' data: https://*.tile.openstreetmap.org; object-src 'none'; base-uri 'self'; form-action 'self'">
   <title>Vivara Forge — Lead Workspace</title>
   <link rel="stylesheet" href="./assets/app.css?v=2026-11-05-crawl-controls">
   <link rel="manifest" href="./manifest.webmanifest">
@@ -49,6 +49,7 @@
       <nav class="side-nav" aria-label="Main navigation">
         <button class="nav-item active" data-view="overview"><span>◫</span>Overview</button>
         <button class="nav-item" data-view="prospects"><span>◎</span>Prospects <i id="leadCountBadge">0</i></button>
+        <button class="nav-item" data-view="map"><span>⌖</span>Prospect map</button>
         <button class="nav-item" data-view="local"><span>⌖</span>Local discovery</button>
         <button class="nav-item" data-view="jobs"><span>◷</span>Enrichment queue</button>
         <button class="nav-item" data-view="companion"><span>↗</span>Browser companion</button>
@@ -111,11 +112,13 @@
           <div class="search-box"><span>⌕</span><input id="leadSearch" type="search" placeholder="Search business, city, phone, or email"></div>
           <select id="categoryFilter" aria-label="Filter by business niche"><option value="">All niches</option></select>
           <select id="websiteFilter" aria-label="Filter by website"><option value="">Any website status</option><option value="has">Has website</option><option value="none">No website</option></select>
-          <select id="statusFilter" aria-label="Filter by status"><option value="">All statuses</option><option value="new">New</option><option value="queued">Queued</option><option value="running">Searching</option><option value="found">Contact found</option><option value="needs_review">Needs review</option><option value="not_found">Not found</option><option value="failed">Failed</option></select>
+          <select id="stateFilter" aria-label="Filter by state"></select>
+          <select id="statusFilter" aria-label="Filter by status"><option value="">All statuses</option><option value="new">New</option><option value="queued">Queued</option><option value="running">Searching</option><option value="found">Contact found</option><option value="needs_review">Needs review</option><option value="not_found">Not found</option><option value="failed">Failed</option><option value="needs_input">Needs state</option><option value="needs_setup">Needs setup</option><option value="blocked">Source blocked</option></select>
           <button id="selectAllVisible" class="button secondary" type="button">Select all visible</button>
           <span id="selectionSummary" class="selection-summary" aria-live="polite">0 selected</span>
           <button id="queueSelected" class="button primary" type="button">Start crawling new prospects <span>→</span></button>
         </div>
+        <div class="form-card"><b>Registry routing &amp; filing recovery</b><p id="routeDiagnostics" class="notice">Florida uses Sunbiz automatically when the lead has a Florida state. Other states support source links and uploaded filings; automatic web discovery requires a configured search service.</p><div class="form-actions left"><select id="assignState" aria-label="Assign state"></select><button id="assignStateButton" class="button secondary">Assign state to selected</button></div><details><summary>Upload a registry PDF for one selected business</summary><p>Save a filing from its registry, select its business above, and upload it. Text and scanned pages are read; extracted contacts require review.</p><label>Original filing link<input id="filingSource" type="url" placeholder="https://…"></label><input id="filingUpload" type="file" accept="application/pdf,.pdf"><p id="filingMessage" role="status"></p></details></div>
         <label class="auto-queue-control"><input id="autoQueueImports" type="checkbox"> Automatically start lookups after import, manual entry, or saving a local result</label>
         <div class="table-wrap">
           <table class="lead-table">
@@ -187,6 +190,7 @@
         <div class="callout"><span class="callout-icon">i</span><p>On iPhone and Android, use the web workspace. The unpacked Chrome extension is for desktop Chrome only.</p></div>
       </section>
 
+      <section id="view-map" class="view"><div class="page-heading"><div><p class="eyebrow">YOUR SAVED LEADS</p><h1>Prospect map</h1><p class="muted">Your imported leads, centered on your saved starting location. No businesses or coordinates are invented.</p></div></div><div class="form-card"><div class="form-actions left"><button id="getMapLocation" class="button primary">Get my current location</button><button id="updateMapAddress" class="button secondary" disabled>Update my address</button><button id="refreshMapLeads" class="button secondary">Refresh leads on map</button></div><label>Address label<input id="mapAddress" maxlength="240" placeholder="Name this starting address"></label><label>Distance: <output id="mapRadiusValue">10 miles</output><input id="mapRadius" type="range" min="0" max="200" step="1" value="10"></label><div class="form-actions left"><select id="mapNiche" aria-label="Map niche"><option value="">All niches</option></select><select id="mapWebsite" aria-label="Map website filter"><option value="">Any website status</option><option value="has">Has website</option><option value="none">No website</option></select></div><p id="mapMessage" role="status"></p><p id="mapCount"></p></div><div id="savedLeadMap" style="height:440px;min-height:300px;border-radius:16px;z-index:0" aria-label="Saved prospect map"></div><p class="fine-print">Street-address matches are approximate. Leads without coordinates stay in your database. Refresh locates up to 50 addresses per click. This map filters saved leads; Local discovery searches for new businesses.</p><div id="mapLeads" class="local-results"></div></section>
       <section id="view-settings" class="view">
         <div class="page-heading"><div><p class="eyebrow">CONNECTIONS</p><h1>Settings</h1><p class="muted">The browser app uses private cloud sign-in and account-scoped prospect memory.</p></div></div>
         <div class="settings-grid">
@@ -203,6 +207,7 @@
             <p class="muted">If importing reports insufficient permissions, the cloud data rules have not been published yet. Open the rules console, copy the repository's full rules file, publish it, then reload. The rules keep each account's records private.</p>
             <div class="form-actions left"><a class="inline-link" href="https://console.firebase.google.com/project/vivara-forge/firestore/rules" target="_blank" rel="noopener">Open data rules console ↗</a><a class="inline-link" href="https://github.com/fugthmanagement/fugthchat-Vivara-Forge/blob/main/firestore.rules" target="_blank" rel="noopener">View rules file ↗</a></div>
           </article>
+          <article class="form-card full-span"><p class="eyebrow">INTEGRATIONS</p><h2>API keys &amp; usage</h2><p>Keys access only your account's saved prospects. Keep keys on your integrating server. Each accepted prospect reserves one credit; failed or blocked lookups are refunded after the job settles.</p><label>Key name<input id="apiKeyName" maxlength="80" placeholder="Management OS"></label><div class="form-actions left"><button id="createApiKey" class="button primary">Create API key</button><button id="refreshApi" class="button secondary">Refresh usage</button></div><label>New key — copy now<input id="newApiKey" readonly autocomplete="off"></label><p id="apiMessage" role="status"></p><p id="apiUsage"></p><div id="apiKeys"></div><p>POST <code>/v1/jobs</code> with <code>X-API-Key</code>, <code>Idempotency-Key</code> and <code>{"prospect_ids":["saved-id"]}</code>. GET <code>/v1/jobs/{job_id}</code> for results and source evidence.</p></article>
           <article class="form-card full-span">
             <p class="eyebrow">DATA HANDLING</p><h2>Temporary documents, recoverable records</h2><p class="muted">The worker parses fetched PDFs in memory, keeps the source URL and relevant text evidence, and discards the PDF bytes. Contact details are never generated from guessed patterns. Use Download full backup from Prospects to save a restorable JSON copy of current prospects, evidence, job history, and sanitized diagnostics.</p>
           </article>
@@ -216,6 +221,7 @@
           <div class="table-wrap"><table class="lead-table admin-table"><thead><tr><th>Account</th><th>Last sign-in</th><th>Verification</th><th>Rank</th><th></th></tr></thead><tbody id="adminAccountRows"><tr><td colspan="5" class="empty-state">Connect the worker to load accounts.</td></tr></tbody></table></div>
           <p id="adminAccountsMessage" class="notice" role="status"></p>
         </div>
+        <div class="form-card"><h2>Allocate API credits</h2><label>Account UID<input id="creditUid" autocomplete="off"></label><label>Credits to add<input id="creditAmount" type="number" min="1" max="100000" value="100"></label><button id="grantCredits" class="button primary">Add credits</button><p id="creditMessage" role="status"></p></div>
         <div class="form-card schedule-card"><p class="eyebrow">BACKGROUND WAKE SCHEDULE</p><h2>Wake the worker on a timer</h2><p class="muted">The timer checks for jobs you already queued and resumes them. It does not invent or import new prospects. The repository's scheduled workflow must also be configured to ping the worker.</p>
           <div class="schedule-controls"><label>Check for saved jobs<select id="wakeInterval"><option value="0">Off</option><option value="15">Every 15 minutes</option><option value="30">Every 30 minutes</option><option value="60">Every hour</option><option value="180">Every 3 hours</option><option value="360">Every 6 hours</option></select></label><button id="saveWakeSchedule" class="button primary" type="button">Save schedule</button></div>
           <p id="wakeScheduleMessage" class="fine-print">Schedule is off.</p>
@@ -230,6 +236,6 @@
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <input id="extensionImport" type="file" accept=".json,application/json" hidden>
-  <script type="module" src="./assets/app.js?v=2026-11-05-crawl-controls"></script>
+  <script type="module" src="./assets/app.js?v=2026-11-05-routes-2"></script>
 </body>
 </html>

@@ -14,6 +14,8 @@ from urllib.parse import urlencode, urljoin, urlparse, urlunparse
 import httpx
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
+from registry import state_of, import_meta, missing_route_message, REGISTRIES
+from pdf_reader import pdf_text
 
 USER_AGENT = "VivaraForgeResearch/1.0"
 EMAIL_RE = re.compile(r"(?<![\w.+-])[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+", re.I)
@@ -22,7 +24,7 @@ PERSON_ROLE = r"registered\s+agent|authorized\s+person(?:\(s\))?|managing\s+memb
 PERSON_NAME = r"[A-Z][A-Za-z'’.-]{1,40}(?:\s+(?:[A-Z][A-Za-z'’.-]{1,40}|[A-Z]\.)){1,3}"
 ROLE_FIRST_RE = re.compile(rf"(?P<role>{PERSON_ROLE})\s*(?:name\s*)?(?::|[-–]|\bis\b)?\s*(?P<name>{PERSON_NAME})", re.I)
 ROLE_LAST_RE = re.compile(rf"(?P<name>{PERSON_NAME})\s*[,|—–-]\s*(?P<role>{PERSON_ROLE})\b", re.I)
-MAX_BYTES = 2_500_000
+MAX_BYTES = 10_000_000
 MAX_TEXT_CHARS = 500_000
 TIMEOUT = httpx.Timeout(12.0, connect=5.0)
 
@@ -103,6 +105,8 @@ def _public_contact_data(text: str, source_url: str, source_route: str, business
     seen_phones = set()
     for match in PHONE_RE.finditer(text[:MAX_TEXT_CHARS]):
         evidence = re.sub(r"\s+", " ", text[max(0, match.start() - 70):min(len(text), match.end() + 70)]).strip()
+        if source_route in {'sunbiz_entity_record','sunbiz_pdf_filing','uploaded_filing'} and not re.search(r'\b(?:phone|telephone|tel|mobile|fax|call)\b', evidence, re.I):
+            continue  # Filing/document numbers are not contact numbers.
         item = _phone_record(match.group(0), source_url, source_route, evidence)
         if not item:
             continue
@@ -316,7 +320,7 @@ async def _read_limited(response: httpx.Response) -> bytes:
     async for part in response.aiter_bytes():
         size += len(part)
         if size > MAX_BYTES:
-            raise ValueError("Page or PDF exceeds the 2.5 MB fetch limit.")
+            raise ValueError("Page or PDF exceeds the 10 MB fetch limit.")
         parts.append(part)
     return b"".join(parts)
 
@@ -347,20 +351,8 @@ async def fetch_public(url: str) -> FetchResult:
                     is_pdf = "application/pdf" in content_type or current.lower().split("?", 1)[0].endswith(".pdf") or data.startswith(b"%PDF-")
                     if is_pdf:
                         try:
-                            reader = PdfReader(BytesIO(data), strict=False)
-                            if reader.is_encrypted:
-                                return FetchResult(current, "", True, "Encrypted PDF cannot be read.")
-                            pages = []
-                            page_errors = 0
-                            for page in reader.pages[:50]:
-                                try:
-                                    pages.append(page.extract_text() or "")
-                                except Exception:
-                                    page_errors += 1
-                            text = "\n".join(pages)
-                            if not text.strip() and page_errors:
-                                return FetchResult(current, "", True, "PDF pages could not be converted to readable text.")
-                            return FetchResult(current, text[:MAX_TEXT_CHARS], True)
+                            text = await asyncio.to_thread(pdf_text, data)
+                            return FetchResult(current, text, True)
                         except Exception as exc:  # malformed documents should not fail the whole batch
                             return FetchResult(current, "", True, f"PDF text extraction failed: {type(exc).__name__}.")
                     if not any(kind in content_type for kind in ("text/html", "text/plain", "application/xhtml")):
@@ -369,7 +361,7 @@ async def fetch_public(url: str) -> FetchResult:
                     profile = _profile_from_html(soup, current)
                     for node in soup(["script", "style", "noscript", "svg", "template"]):
                         node.decompose()
-                    visible = soup.get_text(" ", strip=True)
+                    visible = soup.get_text("\n", strip=True)
                     emails_from_links = [a.get("href", "")[7:] for a in soup.select('a[href^="mailto:"]')]
                     profile_text = "\n".join(
                         _plain(value, 500) if not isinstance(value, list) else "\n".join(_plain(item, 2048) for item in value)
@@ -445,7 +437,7 @@ def _profile_with_contacts(result: FetchResult, route: str, business_name: str) 
     profile = dict(result.profile or {})
     found = _public_contact_data(result.text, result.url, route, business_name)
     phone_records = _merge_records(profile.get("businessPhones", []), found["businessPhones"], key_fields=("e164", "raw"))
-    person_records = _merge_records(profile.get("publicContacts", []), found["publicContacts"], key_fields=("name", "role"))
+    person_records = _merge_records(profile.get("publicContacts", []), [] if route.startswith("sunbiz_") else found["publicContacts"], key_fields=("name", "role"))
     for item in phone_records:
         item["sourceRoute"] = route
         item["sourceUrl"] = result.url[:2048]
@@ -508,8 +500,46 @@ def _canonical_entity_name(value: str) -> str:
     return re.sub(r"[^A-Z0-9]+", "", value)
 
 
-async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str], list[dict]]:
+def sunbiz_people(text: str, url: str) -> list[dict]:
+    """Read only explicitly titled registry names, never address lines as people."""
+    people = []
+    patterns = [
+        (r"(?:Registered Agent Name & Address|Name and Address of Current Registered Agent:)\s*(?:\n)?([A-Z][A-Z ,.'’-]{2,100})(?=\n|\s{2,}\d)", "registered_agent"),
+        (r"Title[^\S\n]+([A-Z /-]{1,25})[^\S\n]*\n(?:Name\s+)?([^\n]+)", None),
+    ]
+    for pattern, role in patterns:
+        for match in re.finditer(pattern, text):
+            name = match.group(1 if role else 2).strip()
+            if len(name) < 3 or len(name) > 100 or re.search(r"\d|@", name):
+                continue
+            people.append({"name": name, "role": role or "authorized_person_" + match.group(1).strip().lower(), "sourceUrl": url, "sourceRoute": "sunbiz_entity_record", "evidenceText": match.group(0)[:300], "requiresReview": True})
+    return people[:20]
+
+
+def _registry_match(prospect: dict, record_text: str) -> dict:
+    """Corroborate an exact legal-name match with imported public location data.
+
+    A missing address never converts an exact name match into a different entity.
+    It only makes the source more clearly marked for human review.
+    """
+    meta = import_meta(prospect)
+    expected = " ".join(str(v) for v in (prospect.get('address'), meta.get('address'), prospect.get('city'), prospect.get('state'), meta.get('postalCode')) if v).upper()
+    zip_codes = set(re.findall(r"\b\d{5}(?:-\d{4})?\b", expected))
+    city = re.sub(r"[^A-Z ]", "", str(prospect.get('city', '')).upper()).strip()
+    normalized = re.sub(r"\s+", " ", record_text.upper())
+    matched_zip = next((code for code in zip_codes if code in normalized), "")
+    matched_city = bool(city and len(city) >= 3 and city in normalized)
+    return {
+        "addressCorroborated": bool(matched_zip or matched_city),
+        "matchedZip": matched_zip,
+        "matchedCity": city if matched_city else "",
+        "matchNote": "Exact legal-name match; imported location also appears in the registry record." if (matched_zip or matched_city) else "Exact legal-name match; imported location was not corroborated in the registry record.",
+    }
+
+
+async def _sunbiz_lookup(prospect: dict) -> tuple[list[dict], list[str], list[dict]]:
     """Look up Florida entities conservatively, then read only exact-name filing sources."""
+    name = str(prospect.get('businessName', ''))
     if len(name.strip()) < 3:
         return [], ["Sunbiz search skipped because the business name is too short to match reliably."], []
     if len(name.strip()) > 45:
@@ -519,7 +549,7 @@ async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str], list[dict]]:
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as client:
             if not await _robots_allows(search_url, client):
-                return [], ["Sunbiz search is disallowed by robots.txt or its robots file could not be checked."], []
+                return [], ["BLOCKED: Sunbiz robots policy could not be confirmed or disallows access. Open the registry and upload its PDF; do not keep retrying the same batch."], []
         search_result = await _fetch_with_retry(search_url)
     except httpx.HTTPError:
         return [], ["Sunbiz search could not be reached."], []
@@ -541,6 +571,7 @@ async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str], list[dict]]:
     candidates: list[dict] = []
     errors: list[str] = []
     profiles: list[dict] = []
+    detail_rows = []
     for entity_name, detail_url in matches:
         async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as client:
             if not await _robots_allows(detail_url, client):
@@ -549,18 +580,29 @@ async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str], list[dict]]:
         if detail.error:
             errors.append(f"Sunbiz entity record: {detail.error}")
             continue
-        candidates.extend({**candidate, "registryEntityName": entity_name} for candidate in _extract(detail, "sunbiz_entity_record", name))
+        match = _registry_match(prospect, detail.text)
+        detail_rows.append((bool(match['addressCorroborated']), entity_name, detail, match))
+    # Prefer a corroborated exact entity, but retain all exact legal-name matches so an
+    # operator can review ambiguity instead of the agent silently choosing one.
+    for _, entity_name, detail, match in sorted(detail_rows, key=lambda row: not row[0]):
+        candidates.extend({**candidate, "registryEntityName": entity_name, "registryMatch": match} for candidate in _extract(detail, "sunbiz_entity_record", name))
+        detail.profile["publicContacts"] = sunbiz_people(detail.text, detail.url)
         detail_profile = _profile_with_contacts(detail, "sunbiz_entity_record", name)
         if detail_profile:
+            detail_profile["registryEntityName"] = entity_name
+            detail_profile["registryState"] = "FL"
+            detail_profile["registryMatch"] = match
             profiles.append({"sourceRoute": "sunbiz_entity_record", "sourceUrl": detail.url, "profile": detail_profile, "evidenceText": detail.text[:500]})
         pdf_links = []
         for link in detail.links:
             url = link.get("url", "")
             parts = urlparse(url)
-            if parts.hostname == "search.sunbiz.org" and ("ConvertTiffToPDF" in parts.path or parts.path.lower().endswith(".pdf")):
+            if parts.hostname == "search.sunbiz.org" and ("converttifftopdf" in parts.path.lower() or "getdocument" in parts.path.lower() or parts.path.lower().endswith(".pdf")):
                 if url not in pdf_links:
                     pdf_links.append(url)
-        for pdf_url in pdf_links[:3]:
+        # Newest reports plus original incorporation: contact emails often appear only
+        # on the initial filing, which is usually the last document in the table.
+        for pdf_url in list(dict.fromkeys(pdf_links[:2] + pdf_links[-2:]))[:4]:
             async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as client:
                 if not await _robots_allows(pdf_url, client):
                     continue
@@ -568,27 +610,36 @@ async def _sunbiz_lookup(name: str) -> tuple[list[dict], list[str], list[dict]]:
             if filing.error:
                 errors.append(f"Sunbiz filing PDF: {filing.error}")
                 continue
-            candidates.extend({**candidate, "registryEntityName": entity_name} for candidate in _extract(filing, "sunbiz_pdf_filing", name))
+            filing.profile['publicContacts'] = sunbiz_people(filing.text, filing.url)
+            candidates.extend({**candidate, "registryEntityName": entity_name, "registryMatch": match} for candidate in _extract(filing, "sunbiz_pdf_filing", name))
             filing_profile = _profile_with_contacts(filing, "sunbiz_pdf_filing", name)
             if filing_profile:
+                filing_profile["registryEntityName"] = entity_name
+                filing_profile["registryState"] = "FL"
+                filing_profile["registryMatch"] = match
                 profiles.append({"sourceRoute": "sunbiz_pdf_filing", "sourceUrl": filing.url, "profile": filing_profile, "evidenceText": filing.text[:500]})
+    if not matches:
+        errors.append("NOT_FOUND: No exact legal entity name matched in the Florida registry. Try the registered legal name or provide the filing URL.")
     return candidates, errors[:5], profiles[:12]
 
 
 async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[list[dict], list[str], list[dict]]:
     name = str(prospect.get("businessName", ""))[:160]
-    state = re.sub(r"[^A-Z]", "", str(prospect.get("state", "")).upper())
+    state = state_of(prospect)
     urls: list[tuple[str, str]] = []
     website = str(prospect.get("website", "")).strip()
     if website:
         urls.append((website, "business_website"))
-    raw_sources = str(prospect.get("sourceUrlsText", ""))
-    for source in re.split(r"[\s,;]+", raw_sources):
+    meta = import_meta(prospect)
+    source_values = [prospect.get("sourceUrlsText", ""), prospect.get("manualSourceUrl", ""), prospect.get("registryUrl", ""), prospect.get("filingUrl", "")]
+    source_values.extend(meta.get("socialUrls", []) if isinstance(meta.get("socialUrls"), list) else [])
+    raw_sources = "\n".join(str(v) for v in source_values if v)
+    for source in re.split(r"\s+", raw_sources):
         source = source.strip()
         if source.startswith(("https://", "http://")) and len(source) < 2048:
             urls.append((source, "provided_public_source"))
 
-    search_urls, search_error = await _search_urls(name, str(prospect.get("city", "")), str(prospect.get("state", "")), search_api_key)
+    search_urls, search_error = await _search_urls(name, str(prospect.get("city", "")), state, search_api_key)
     urls.extend((url, "optional_web_search") for url in search_urls)
 
     unique_urls = []
@@ -605,7 +656,7 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
     route_errors: list[str] = [search_error] if search_error else []
     profiles: list[dict] = []
     if state in {"FL", "FLORIDA"}:
-        sunbiz_candidates, sunbiz_errors, sunbiz_profiles = await _sunbiz_lookup(name)
+        sunbiz_candidates, sunbiz_errors, sunbiz_profiles = await _sunbiz_lookup(prospect)
         candidates.extend(sunbiz_candidates)
         route_errors.extend(sunbiz_errors)
         profiles.extend(sunbiz_profiles)
@@ -615,7 +666,7 @@ async def enrich_prospect(prospect: dict, search_api_key: str = "") -> tuple[lis
             return [], route_errors[:10], []
         if search_api_key:
             return [], ["Optional web search returned no source pages for this exact business and location."], []
-        return [], ["No public source URL was provided and optional web search is not configured."], []
+        return [], [missing_route_message(prospect, False)], []
     for url, route in unique_urls:
         try:
             async with httpx.AsyncClient(timeout=TIMEOUT, headers={"User-Agent": USER_AGENT}) as robot_client:

@@ -1,3 +1,5 @@
+import { createProspectMap } from "./prospect-map.js";
+import { STATES, stateOf } from "./states.js";
 import { initializeApp } from "https://www.gstatic.com/firebasejs/13.2.0/firebase-app.js";
 import {
   getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, GoogleAuthProvider,
@@ -40,6 +42,7 @@ let currentLocation = null;
 let toastTimer = null;
 let authMode = "signin";
 let adminAccounts = [];
+let savedProspectMap = null;
 
 function safeStorageGet(key, fallback = "") {
   try { return localStorage.getItem(key) ?? fallback; }
@@ -78,7 +81,7 @@ function recordClientError(context, error) {
 
 const labels = {
   new: "New", queued: "Queued", running: "Searching", found: "Contact found",
-  needs_review: "Needs review", not_found: "Not found", failed: "Failed",
+  needs_review: "Needs review", not_found: "Not found", failed: "Failed", needs_input: "Needs state", needs_setup: "Needs setup", blocked: "Source blocked",
   completed: "Completed", partial: "Partially complete"
 };
 
@@ -154,6 +157,7 @@ function beginWorkspace(user) {
   $("#userEmail").textContent = user.email || "Signed in";
   $("#userInitial").textContent = (user.displayName || user.email || "V").trim().charAt(0).toUpperCase();
   updateAdminVisibility();
+  savedProspectMap?.reset();
   setConnection(true, "Signed in and connected");
   stopListeners();
 
@@ -161,6 +165,7 @@ function beginWorkspace(user) {
     prospectRows = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
     refreshCategoryFilter();
     renderProspects();
+    savedProspectMap?.render();
     updateMetrics();
   }, (error) => {
     setConnection(false, "Cloud data rules need setup");
@@ -170,6 +175,7 @@ function beginWorkspace(user) {
   stopCandidates = onSnapshot(userCollection("candidates"), (snapshot) => {
     candidateRows = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
     renderProspects();
+    savedProspectMap?.render();
     updateMetrics();
   }, (error) => showToast(friendlyError(error), true));
 
@@ -182,6 +188,10 @@ function beginWorkspace(user) {
 
 function endWorkspace() {
   currentUser = null;
+  savedProspectMap?.reset();
+  $("#newApiKey").value = "";
+  $("#apiKeys").textContent = "";
+  $("#apiUsage").textContent = "";
   stopListeners();
   prospectRows = [];
   candidateRows = [];
@@ -268,6 +278,7 @@ function gotoView(name) {
   $$(".mobile-nav button").forEach((item) => item.classList.toggle("active", item.dataset.view === name));
   const title = name.charAt(0).toUpperCase() + name.slice(1).replace("companion", "Browser companion");
   $("#pageTitle").textContent = name === "local" ? "Local discovery" : name === "jobs" ? "Enrichment queue" : name === "admin" ? "Admin dashboard" : title;
+  if (name === "map") savedProspectMap?.open();
   if (name === "admin" && isAdminUser()) loadAdminDashboard();
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
@@ -373,6 +384,7 @@ function renderProspects() {
   const status = $("#statusFilter")?.value || "";
   const category = $("#categoryFilter")?.value || "";
   const websiteFilter = $("#websiteFilter")?.value || "";
+  const stateFilter = $("#stateFilter")?.value || "";
   const filtered = prospectRows.filter((prospect) => {
     const facts = profileFacts(prospect);
     const emails = emailCandidatesFor(prospect).map((item) => item.email);
@@ -380,7 +392,8 @@ function renderProspects() {
     const phones = facts.businessPhones.map((item) => item.formatted || item.raw || item.e164);
     const text = [prospect.businessName, prospect.category, prospect.city, prospect.state, prospect.phone, prospect.website, facts.address, facts.description, ...emails, ...names, ...phones].join(" ").toLowerCase();
     const hasWebsite = Boolean(prospect.website || facts.website);
-    return (!needle || text.includes(needle))
+    return (!stateFilter || (stateFilter === "unknown" ? !stateOf(prospect) : stateOf(prospect) === stateFilter))
+      && (!needle || text.includes(needle))
       && (!status || prospect.status === status)
       && (!category || prospect.category === category)
       && (!websiteFilter || (websiteFilter === "has" ? hasWebsite : !hasWebsite));
@@ -395,8 +408,9 @@ function renderProspects() {
   body.innerHTML = filtered.map((prospect) => {
     const emails = emailCandidatesFor(prospect);
     const facts = profileFacts(prospect);
+    const profiles = profileDocsFor(prospect.id).map((item) => item.profile || {});
     const emailSummary = emails.length
-      ? emails.slice(0, 6).map((item) => '<div class="contact-item"><b>' + escapeHtml(item.email) + '</b><small>' + (item.confidenceScore ? 'Evidence score ' + escapeHtml(item.confidenceScore) + '/10' : 'Source listed') + ' · ' + escapeHtml(item.sources.length) + ' source(s)</small></div>').join("") + (emails.length > 6 ? '<small>+' + (emails.length - 6) + ' more emails</small>' : '')
+      ? emails.slice(0, 6).map((item) => '<div class="contact-item"><b>' + escapeHtml(item.email) + '</b><small>' + (item.confidenceScore ? 'Evidence score ' + escapeHtml(item.confidenceScore) + '/10' : 'Source listed') + ' · ' + escapeHtml(item.sources.length) + ' source(s)' + (item.factCheck ? ' · evidence check: ' + escapeHtml(item.factCheck) : '') + '</small></div>').join("") + (emails.length > 6 ? '<small>+' + (emails.length - 6) + ' more emails</small>' : '')
       : "";
     const phoneSummary = facts.businessPhones.slice(0, 3).map((item) => '<div class="contact-item"><b>' + escapeHtml(item.formatted || item.raw || item.e164) + '</b><small>' + (item.kind === "fax" ? "Fax number" : "Publicly listed number") + '</small></div>').join("") + (facts.businessPhones.length > 3 ? '<small>+' + (facts.businessPhones.length - 3) + ' more numbers</small>' : '');
     const peopleSummary = facts.publicContacts.slice(0, 3).map((item) => '<div class="contact-item"><b>' + escapeHtml(item.name) + '</b><small>' + escapeHtml(String(item.role || "public contact").replace(/_/g, " ")) + ' · source needs review</small></div>').join("") + (facts.publicContacts.length > 3 ? '<small>+' + (facts.publicContacts.length - 3) + ' more names</small>' : '');
@@ -406,21 +420,28 @@ function renderProspects() {
       : '<span class="muted">—</span>';
     const phoneText = facts.businessPhones.map((item) => [item.formatted || item.raw, item.e164 && item.e164 !== item.formatted ? item.e164 : ""].filter(Boolean).join(" · ")).join("; ");
     const peopleText = facts.publicContacts.map((item) => item.name + " — " + String(item.role || "contact").replace(/_/g, " ")).join("; ");
+    const registryMatch = profiles.map((profile) => profile.registryMatch).find(Boolean);
     const factsList = [
       ["Address", facts.address], ["Postal code", facts.postalCode], ["Publicly listed phone numbers", phoneText || facts.phone], ["Website", facts.website], ["Hours", facts.hours],
       ["Rating", facts.rating], ["Reviews", facts.reviewCount], ["About", facts.description],
       ["Publicly named people and roles", peopleText],
       ["Google Place ID", facts.placeId],
+      ["Legal registry match", registryMatch?.matchNote],
     ].filter(([, value]) => value);
     const links = [facts.googleMapsUrl && ["Google Maps profile", facts.googleMapsUrl], facts.evidenceUrl && ["Crawled source", facts.evidenceUrl], ...facts.socialUrls.map((url) => ["Social profile", url])].filter(Boolean);
     const contactSources = [...facts.businessPhones, ...facts.publicContacts].map((item) => '<div class="contact-evidence"><b>' + escapeHtml(item.formatted || item.name || item.raw || "Public contact") + (item.role ? ' · ' + escapeHtml(String(item.role).replace(/_/g, " ")) : '') + '</b><small>' + escapeHtml(item.sourceRoute || "Source") + (item.kind ? ' · ' + escapeHtml(item.kind.replace(/_/g, " ")) : '') + '</small><p>' + escapeHtml(item.evidenceText || "Source-listed business contact; confirm before use.") + '</p>' + (item.sourceUrl ? '<a href="' + escapeHtml(item.sourceUrl) + '" target="_blank" rel="noopener">Open evidence source ↗</a>' : '') + '</div>').join("");
     const profileEvidence = factsList.length || links.length || contactSources
       ? '<details><summary class="evidence-link">Business information</summary><div class="evidence-box">' + factsList.map(([label, value]) => '<small><b>' + escapeHtml(label) + ':</b> ' + escapeHtml(value) + '</small>').join("") + links.map(([label, url]) => '<small><a href="' + escapeHtml(url) + '" target="_blank" rel="noopener">' + escapeHtml(label) + ' ↗</a></small>').join("") + contactSources + '</div></details>'
       : "";
-    const evidence = '<div class="evidence-stack">' + emailEvidence + profileEvidence + '</div>';
-    const location = [prospect.city, prospect.state].filter(Boolean).join(", ") || "—";
+    const agentTrace = Array.isArray(prospect.agentTrace) && prospect.agentTrace.length
+      ? '<details><summary class="evidence-link">Research plan</summary><div class="evidence-box">' + prospect.agentTrace.map((step) => '<small><b>' + escapeHtml(step.tool || 'tool') + ':</b> ' + escapeHtml(step.purpose || '') + '</small>').join('') + '</div></details>'
+      : '';
+    const evidence = '<div class="evidence-stack">' + emailEvidence + profileEvidence + agentTrace + '</div>';
+    const location = [prospect.city, stateOf(prospect)].filter(Boolean).join(", ") || "—";
+    const registry = STATES.find(item => item.code === stateOf(prospect));
+    const registryLink = registry ? '<a class="inline-link" target="_blank" rel="noopener" href="' + escapeHtml(registry.url) + '">' + escapeHtml(registry.name) + ' registry ↗</a>' : "";
     const lookupNote = prospect.lastLookupNote ? '<small class="muted">' + escapeHtml(prospect.lastLookupNote) + '</small>' : '';
-    return '<tr data-id="' + escapeHtml(prospect.id) + '"><td><input class="lead-check" type="checkbox" value="' + escapeHtml(prospect.id) + '" aria-label="Select ' + escapeHtml(prospect.businessName) + '"></td><td><div class="business-cell"><b>' + escapeHtml(prospect.businessName) + '</b><small>' + escapeHtml(prospect.category || "Business") + '</small></div></td><td>' + escapeHtml(location) + '</td><td>' + contact + '</td><td>' + statusPill(prospect.status) + lookupNote + '</td><td>' + evidence + '</td><td><div class="row-actions"><button class="mini-button" data-row-action="queue" data-id="' + escapeHtml(prospect.id) + '">Queue</button><button class="mini-button" data-row-action="delete" data-id="' + escapeHtml(prospect.id) + '" title="Delete prospect">×</button></div></td></tr>';
+    return '<tr data-id="' + escapeHtml(prospect.id) + '"><td><input class="lead-check" type="checkbox" value="' + escapeHtml(prospect.id) + '" aria-label="Select ' + escapeHtml(prospect.businessName) + '"></td><td><div class="business-cell"><b>' + escapeHtml(prospect.businessName) + '</b><small>' + escapeHtml(prospect.category || "Business") + '</small></div></td><td>' + escapeHtml(location) + '</td><td>' + contact + '</td><td>' + statusPill(prospect.status) + lookupNote + '</td><td>' + evidence + registryLink + '</td><td><div class="row-actions"><button class="mini-button" data-row-action="queue" data-id="' + escapeHtml(prospect.id) + '">Queue</button><button class="mini-button" data-row-action="delete" data-id="' + escapeHtml(prospect.id) + '" title="Delete prospect">×</button></div></td></tr>';
   }).join("");
   updateSelectionSummary();
 }
@@ -572,6 +593,8 @@ function normalizeInput(row) {
   if (!businessName) return null;
   const meta = {};
   const metaFields = [
+    ["latitude", ["latitude", "lat"], 30],
+    ["longitude", ["longitude", "lng", "lon"], 30],
     ["sourceRecordId", ["source_record_id", "external_record_id", "source_id"], 160],
     ["sourceLabel", ["source_label", "source_system", "source"], 100],
     ["websiteSource", ["website_source"], 80],
@@ -689,7 +712,7 @@ function normalizeInput(row) {
     businessName: businessName.slice(0, 160),
     category: firstValue(fields, ["category", "industry", "type", "niche", "business_type"]).slice(0, 80),
     city: city.slice(0, 100),
-    state: state.slice(0, 50),
+    state: stateOf({state, city, address:meta.address}) || state.slice(0, 50),
     phone: businessPhones[0]?.formatted || firstValue(fields, ["phone", "phone_number", "telephone", "tel", "business_phone", "primary_phone"]).slice(0, 40),
     website: cleanUrl(firstValue(fields, ["website", "website_url", "business_website", "url", "domain"])),
     sourceUrlsText: [...new Set(sourceUrls)].slice(0, 12).join("\n").slice(0, 4000),
@@ -884,8 +907,8 @@ function updateSelectionSummary() {
   const button = $("#queueSelected");
   if (selectedCount) button.textContent = "Start crawling " + selectedCount + " selected →";
   else {
-    const newCount = prospectRows.filter((item) => item.status === "new").length;
-    button.textContent = newCount ? "Start crawling " + newCount + " new prospects →" : "Select prospects to crawl";
+    const newCount = visibleReadyIds().length;
+    button.textContent = newCount ? "Start crawling " + newCount + " visible prospects →" : "Select prospects to crawl";
     button.disabled = newCount === 0;
   }
   if (selectedCount) button.disabled = false;
@@ -903,7 +926,7 @@ async function startSelectedCrawl() {
   const selected = selectedProspectIds();
   const ids = selected.length
     ? selected
-    : prospectRows.filter((item) => item.status === "new").map((item) => item.id);
+    : visibleReadyIds();
   if (!ids.length) return showToast("Select at least one prospect that can be checked.", true);
   const button = $("#queueSelected");
   button.disabled = true;
@@ -952,7 +975,7 @@ async function queueProspects(ids, { allowUnloaded = false, throwOnError = false
     if (throwOnError) throw new Error("Sign in first.");
     return false;
   }
-  const chosen = ids.length ? ids : prospectRows.filter((item) => item.status === "new").map((item) => item.id);
+  const chosen = ids.length ? ids : visibleReadyIds();
   if (!chosen.length) {
     if (throwOnError) throw new Error("Select at least one new prospect.");
     showToast("Select at least one new prospect.", true);
@@ -960,7 +983,7 @@ async function queueProspects(ids, { allowUnloaded = false, throwOnError = false
   }
   const validIds = chosen.filter((id) => {
     const record = prospectRows.find((item) => item.id === id);
-    return record ? ["new", "not_found", "failed", "needs_review", "found"].includes(record.status) : allowUnloaded;
+    return record ? ["new", "not_found", "failed", "needs_review", "found", "needs_input", "needs_setup", "blocked"].includes(record.status) : allowUnloaded;
   });
   if (!validIds.length) {
     if (throwOnError) throw new Error("Those prospects are already queued or running.");
@@ -1289,6 +1312,7 @@ async function checkBackend() {
     const data = await response.json();
     if (!response.ok || data.status !== "ok") throw new Error(data.message || "Worker did not return ready status.");
     const ready = Boolean(data.worker_ready);
+    $("#routeDiagnostics").textContent = data.version ? "Worker " + data.version + ". Web discovery: " + (data.routes?.web_search ? "configured" : "not configured") + ". Registry/PDF access is checked per source." : "Worker update required: the running backend does not include the registry repair yet. Upload the latest hf-space files.";
     const message = ready
       ? "Worker is online and ready. Your two configured admin emails are recognized automatically."
       : "Space is online, but Firebase is not initialized. Add the FIREBASE_SERVICE_ACCOUNT_JSON secret in Hugging Face Space Settings. No ADMIN_UID is needed for the two admin emails.";
@@ -1423,7 +1447,8 @@ function buildMobileNav() {
   const items = [
     ["overview", "◫", "Home"],
     ["prospects", "◎", "Leads"],
-    ["local", "⌖", "Local"],
+    ["map", "⌖", "Map"],
+    ["local", "+", "Find"],
     ["jobs", "◷", "Queue"],
     ["settings", "⚙", "Settings"]
   ];
@@ -1462,6 +1487,8 @@ function initEvents() {
     event.target.value = "";
   });
   $("#extensionImportTrigger").addEventListener("click", () => $("#extensionImport").click());
+  setupResearchControls();
+  savedProspectMap = createProspectMap({request:workerRequest,getRows:()=>prospectRows,getEvidence:()=>candidateRows,getUser:()=>currentUser,escape:escapeHtml,onOpenLead:row=>{$("#leadSearch").value=row.businessName;$("#stateFilter").value="";$("#categoryFilter").value="";$("#websiteFilter").value="";$("#statusFilter").value="";gotoView("prospects");renderProspects()}});
   $("#leadSearch").addEventListener("input", renderProspects);
   $("#categoryFilter").addEventListener("change", renderProspects);
   $("#websiteFilter").addEventListener("change", renderProspects);
@@ -1545,3 +1572,41 @@ onAuthStateChanged(auth, (user) => {
   else endWorkspace();
 });
 getRedirectResult(auth).catch((error) => setLoginMessage(friendlyError(error)));
+
+
+function visibleReadyIds() {
+  const visible = new Set($$(".lead-check").map(box=>box.value));
+  return prospectRows.filter(row=>visible.has(row.id) && ["new","failed","blocked","needs_input","needs_setup","not_found"].includes(row.status)).map(row=>row.id);
+}
+function setupResearchControls() {
+  const options = STATES.map(s=>'<option value="'+s.code+'">'+s.name+'</option>').join('');
+  $('#stateFilter').innerHTML='<option value="">All states</option><option value="unknown">State missing</option>'+options;
+  $('#assignState').innerHTML='<option value="">Choose correct state</option>'+options;
+  $('#stateFilter').addEventListener('change',renderProspects);
+  $('#assignStateButton').addEventListener('click',async()=>{
+    const ids=selectedProspectIds(),state=$('#assignState').value;
+    if(!ids.length||!state)return showToast('Select leads and their correct state first.',true);
+    try{await workerRequest('/api/prospects/state',{method:'PUT',body:JSON.stringify({prospect_ids:ids,state})});showToast('State updated. Start crawling the selected state.');}catch(e){showToast(e.message,true)}
+  });
+  $('#filingUpload').addEventListener('change',async event=>{
+    const file=event.target.files?.[0],ids=selectedProspectIds();
+    if(!file)return;
+    if(ids.length!==1){event.target.value='';return showToast('Select exactly one business for this filing.',true)}
+    if(file.size>10000000){event.target.value='';return showToast('PDF must be under 10 MB.',true)}
+    $('#filingMessage').textContent='Reading filing…';
+    try{
+      const encoded=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(String(r.result).split(',')[1]);r.onerror=reject;r.readAsDataURL(file)});
+      const result=await workerRequest('/api/prospects/'+encodeURIComponent(ids[0])+'/pdf',{method:'POST',body:JSON.stringify({data:encoded,filename:file.name,source_url:$('#filingSource').value})},{attempts:1,timeoutMs:180000});
+      $('#filingMessage').textContent=result.emails+' email candidates. '+result.message;
+    }catch(e){$('#filingMessage').textContent=e.message}finally{event.target.value=''}
+  });
+  $('#refreshApi').addEventListener('click',refreshApi);
+  $('#createApiKey').addEventListener('click',async()=>{
+    try{const owner=currentUser?.uid;const data=await workerRequest('/api/keys',{method:'POST',body:JSON.stringify({name:$('#apiKeyName').value||'Integration'})},{attempts:1});if(currentUser?.uid!==owner)return;$('#newApiKey').value=data.key;$('#apiMessage').textContent=data.message;await refreshApi()}catch(e){$('#apiMessage').textContent=e.message}
+  });
+  $('#apiKeys').addEventListener('click',async event=>{const id=event.target.closest('[data-revoke]')?.dataset.revoke;if(!id)return;try{await workerRequest('/api/keys/'+id+'/revoke',{method:'PUT'});await refreshApi()}catch(e){$('#apiMessage').textContent=e.message}});
+  $('#grantCredits').addEventListener('click',async()=>{try{const uid=$('#creditUid').value.trim(),credits=Number($('#creditAmount').value);if(!uid||!Number.isInteger(credits)||credits<1)throw Error('Enter an account UID and a positive credit amount.');const data=await workerRequest('/api/admin/accounts/'+encodeURIComponent(uid)+'/credits',{method:'POST',body:JSON.stringify({credits,operation_id:crypto.randomUUID()})});$('#creditMessage').textContent='Account balance: '+data.credits+' credits.'}catch(e){$('#creditMessage').textContent=e.message}});
+}
+async function refreshApi(){
+  try{const owner=currentUser?.uid;const data=await workerRequest('/api/keys');if(currentUser?.uid!==owner)return;$('#apiUsage').textContent='Available: '+(data.usage.credits||0)+' · Reserved: '+(data.usage.reserved||0)+' · Used: '+(data.usage.used||0)+' · Requests: '+(data.usage.requests||0);$('#apiKeys').innerHTML=data.keys.map(k=>'<p>'+escapeHtml(k.name)+' · '+escapeHtml(k.prefix)+'… '+(k.revoked?'Revoked':'<button class="mini-button" data-revoke="'+escapeHtml(k.id)+'">Revoke</button>')+'</p>').join('')||'No API keys yet.'}catch(e){$('#apiMessage').textContent=e.message}
+}

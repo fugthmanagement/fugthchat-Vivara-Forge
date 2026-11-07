@@ -62,6 +62,7 @@ Create a **new Docker Space** for this project. Upload the contents of `hf-space
 - Optional variable `OVERPASS_URLS`: up to three comma-separated HTTPS OpenStreetMap Overpass endpoints. They are tried in order when local discovery encounters a temporary endpoint failure. The older single `OVERPASS_URL` variable remains supported.
 - Optional variable `MAX_CONCURRENT_JOBS`: number of prospect batches processed at once, from 1 to 4; default is 2.
 - Optional variable `FACT_CHECK_GATEWAY_URL`: the base URL for the separate small-model gateway, such as `https://fugthchat-meplifeos.hf.space`. Vivara Forge calls its protected `POST /v1/chat` endpoint with task `support`; add the gateway's existing API key as Forge Space secret `FACT_CHECK_GATEWAY_TOKEN`. `FACT_CHECK_MODEL` is forwarded unchanged to the gateway (default: `0.5b`), so you can switch to `1.5b` or any future gateway-supported model in Space Settings without updating Forge. This is advisory only: the worker sends a short public-evidence packet and accepts only `supported`, `uncertain`, or `unsupported` labels. It never allows a model to create an email, phone number, title, person, source URL, or ownership claim.
+- Image Downloader is consent-gated. It can inspect only a selected prospect's supplied public website, source URLs, and supplied public social-page URLs; it does not log in, scrape Google Maps, broadly search social networks, or archive an image automatically. Set the public Space variable `GOOGLE_DRIVE_FOLDER_ID` to `1jiE68h70bDXHPnuYkMqYdhBLhf4GW87E`. The worker uses the private `GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON` secret when present, otherwise the Firebase service-account secret. Enable the Google Drive API for that service account and share the archive folder with its `client_email` as an Editor. Each approved image is converted to JPEG and saved privately with its original public source URL and recorded consent.
 
 The worker verifies Firebase ID tokens and only accepts the configured administrator emails or UIDs. The admin dashboard uses the worker's Firebase Admin SDK to list accounts and update rank claims; only protected admin identities can call those endpoints. Firestore Admin SDK writes bypass client Security Rules, so keep the service-account key out of the repository and protect the admin allowlist. Once the Space is built, put its base `https://…hf.space` URL in the app's Settings and use **Check status**.
 
@@ -97,6 +98,8 @@ The extension does not run on iPhone or Android. Use the responsive web app ther
 
 ## 6. Google Drive project folder
 
-Project archive folder: [Vivara Forge Lead Enrichment](https://drive.google.com/drive/folders/1IFtAz3TzIIqHxroX_FxmPXRx-GgK5B-S)
+Project notes folder: [Vivara Forge Lead Enrichment](https://drive.google.com/drive/folders/1IFtAz3TzIIqHxroX_FxmPXRx-GgK5B-S)
 
-This version does not archive downloaded PDFs there: the worker extracts PDF text in memory and discards the bytes. Use the folder for notes and project documents that should not go in Firestore. Do not upload service-account keys or API tokens.
+Consent-based image archive: [Vivara Forge — Consent-Based Business Images](https://drive.google.com/drive/folders/1jiE68h70bDXHPnuYkMqYdhBLhf4GW87E)
+
+This version does not archive downloaded PDFs there: the worker extracts PDF text in memory and discards the bytes. The separate image archive receives only individually approved public business images, converted to JPEG with their original source URL recorded in Firestore. Use the notes folder for project documents that should not go in Firestore. Do not upload service-account keys or API tokens.

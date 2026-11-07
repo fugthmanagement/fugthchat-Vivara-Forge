@@ -43,6 +43,8 @@ let toastTimer = null;
 let authMode = "signin";
 let adminAccounts = [];
 let savedProspectMap = null;
+let activeQueueTab = "batches";
+let activeJobId = "";
 
 function safeStorageGet(key, fallback = "") {
   try { return localStorage.getItem(key) ?? fallback; }
@@ -165,6 +167,7 @@ function beginWorkspace(user) {
     prospectRows = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
     refreshCategoryFilter();
     renderProspects();
+    if (activeJobId) renderJobDetail();
     savedProspectMap?.render();
     updateMetrics();
   }, (error) => {
@@ -175,6 +178,7 @@ function beginWorkspace(user) {
   stopCandidates = onSnapshot(userCollection("candidates"), (snapshot) => {
     candidateRows = snapshot.docs.map((item) => ({ id: item.id, ...item.data() }));
     renderProspects();
+    if (activeJobId) renderJobDetail();
     savedProspectMap?.render();
     updateMetrics();
   }, (error) => showToast(friendlyError(error), true));
@@ -461,6 +465,53 @@ function refreshCategoryFilter() {
   if (categories.includes(selected)) select.value = selected;
 }
 
+function setQueueTab(tab) {
+  activeQueueTab = tab === "details" && activeJobId ? "details" : "batches";
+  $$("[data-queue-tab]").forEach((button) => {
+    button.classList.toggle("active", button.dataset.queueTab === activeQueueTab);
+    if (button.dataset.queueTab === "details") button.disabled = !activeJobId;
+  });
+  $("#jobsList").classList.toggle("hidden", activeQueueTab !== "batches");
+  $("#jobDetail").classList.toggle("hidden", activeQueueTab !== "details");
+}
+
+function renderJobDetail() {
+  const container = $("#jobDetail");
+  const job = jobRows.find((item) => item.id === activeJobId);
+  if (!job) {
+    activeJobId = "";
+    container.innerHTML = "";
+    setQueueTab("batches");
+    return;
+  }
+  const ids = Array.isArray(job.prospectIds) ? job.prospectIds : [];
+  const rows = ids.map((id) => prospectRows.find((row) => row.id === id)).filter(Boolean);
+  const missing = Math.max(0, ids.length - rows.length);
+  const progress = Math.max(0, Math.min(100, Number(job.progressPercent || 0)));
+  const created = job.createdAt?.toDate ? job.createdAt.toDate().toLocaleString() : "Just created";
+  const results = rows.map((prospect) => {
+    const facts = profileFacts(prospect);
+    const emails = emailCandidatesFor(prospect).slice(0, 8);
+    const people = facts.publicContacts.slice(0, 6);
+    const phones = facts.businessPhones.slice(0, 6);
+    const trace = Array.isArray(prospect.agentTrace) ? prospect.agentTrace.map((step) => step.tool || step.name).filter(Boolean).slice(0, 7) : [];
+    const contacts = [
+      ...emails.map((item) => "Email: " + item.email + (item.factCheck ? " · " + item.factCheck : "")),
+      ...phones.map((item) => "Public phone: " + (item.formatted || item.raw || item.e164)),
+      ...people.map((item) => "Person: " + item.name + " · " + String(item.role || "public contact").replace(/_/g, " "))
+    ];
+    const source = emails[0]?.sources?.[0]?.sourceUrl || facts.evidenceUrl || "";
+    return '<article class="job-result"><div class="job-result-top"><div><b>' + escapeHtml(prospect.businessName || "Unnamed business") + '</b><small>' + escapeHtml([prospect.category || "Business", prospect.city || "", stateOf(prospect)].filter(Boolean).join(" · ") || "Location not supplied") + '</small></div>' + statusPill(prospect.status) + '</div>' + (contacts.length ? '<div class="job-result-contacts">' + contacts.map((text) => '<span>' + escapeHtml(text) + '</span>').join("") + '</div>' : '<small class="muted">No public contact evidence saved yet.</small>') + (source ? '<a class="inline-link" href="' + escapeHtml(source) + '" target="_blank" rel="noopener">Open saved evidence ↗</a>' : "") + (trace.length ? '<small>Research path: ' + escapeHtml(trace.join(" → ")) + '</small>' : "") + (prospect.lastError ? '<small>Result note: ' + escapeHtml(prospect.lastError) + '</small>' : "") + '</article>';
+  }).join("") || '<div class="empty-help visible"><div class="empty-illustration">◷</div><b>Waiting for result records</b><p>This saved batch has no currently loaded prospect records yet.</p></div>';
+  container.innerHTML = '<div class="job-detail-head"><div><p class="eyebrow">BATCH RESULTS</p><h2>' + escapeHtml(job.requestedCount || ids.length || 0) + ' prospect batch</h2><p class="muted">Created ' + escapeHtml(created) + ' · ' + escapeHtml(job.progress || 0) + ' / ' + escapeHtml(job.requestedCount || ids.length || 0) + ' processed' + (missing ? ' · ' + escapeHtml(missing) + ' record(s) unavailable' : '') + '</p></div><button class="button secondary" type="button" data-queue-tab="batches">← All batches</button></div><div class="progress-track"><div class="progress-bar" style="width:' + progress + '%"></div></div>' + (job.lastError ? '<div class="callout warning"><span class="callout-icon">!</span><p>' + escapeHtml(job.lastError) + '</p></div>' : "") + '<div class="job-results">' + results + '</div>';
+}
+
+function openJobDetail(jobId) {
+  activeJobId = String(jobId || "");
+  renderJobDetail();
+  setQueueTab("details");
+}
+
 function renderJobs() {
   const container = $("#jobsList");
   if (!jobRows.length) {
@@ -476,8 +527,10 @@ function renderJobs() {
     const progress = Math.max(0, Math.min(100, Number(job.progressPercent || 0)));
     const created = job.createdAt?.toDate ? job.createdAt.toDate().toLocaleString() : "Just created";
     const attempt = Number(job.attemptCount || 0);
-    return '<article class="job-card"><div class="job-top"><b>Prospect batch · ' + escapeHtml(job.requestedCount || 0) + ' records</b>' + statusPill(job.status) + '</div><div class="job-meta"><span>Created ' + escapeHtml(created) + (attempt > 1 ? ' · recovery attempt ' + escapeHtml(attempt) : '') + '</span><span>' + escapeHtml(job.progress || 0) + ' / ' + escapeHtml(job.requestedCount || 0) + ' processed</span></div><div class="progress-track"><div class="progress-bar" style="width:' + progress + '%"></div></div>' + (job.lastError ? '<p class="fine-print">' + escapeHtml(job.lastError) + '</p>' : "") + "</article>";
+    return '<article class="job-card"><div class="job-top"><b>Prospect batch · ' + escapeHtml(job.requestedCount || 0) + ' records</b>' + statusPill(job.status) + '</div><div class="job-meta"><span>Created ' + escapeHtml(created) + (attempt > 1 ? ' · recovery attempt ' + escapeHtml(attempt) : '') + '</span><span>' + escapeHtml(job.progress || 0) + ' / ' + escapeHtml(job.requestedCount || 0) + ' processed</span></div><div class="progress-track"><div class="progress-bar" style="width:' + progress + '%"></div></div>' + (job.lastError ? '<p class="fine-print">' + escapeHtml(job.lastError) + '</p>' : "") + '<div class="job-card-actions"><button class="mini-button" type="button" data-open-job="' + escapeHtml(job.id) + '">Open batch results</button></div></article>';
   }).join("");
+  renderJobDetail();
+  setQueueTab(activeQueueTab);
 }
 
 function normalizeImportKey(value) {
@@ -912,6 +965,7 @@ function updateSelectionSummary() {
     button.disabled = newCount === 0;
   }
   if (selectedCount) button.disabled = false;
+  renderStateRoute();
 }
 
 function setQueueNotice(message, isError = false) {
@@ -1470,6 +1524,10 @@ function initEvents() {
     const action = event.target.closest("[data-row-action]");
     if (action && action.dataset.rowAction === "queue") queueProspects([action.dataset.id]);
     if (action && action.dataset.rowAction === "delete") deleteProspect(action.dataset.id);
+    const openJob = event.target.closest("[data-open-job]");
+    if (openJob) openJobDetail(openJob.dataset.openJob);
+    const queueTab = event.target.closest("[data-queue-tab]");
+    if (queueTab && !queueTab.disabled) setQueueTab(queueTab.dataset.queueTab);
     const feedback = event.target.closest("[data-feedback]");
     if (feedback) submitFeedback(feedback.dataset.feedback, feedback.dataset.label);
     const saveLocal = event.target.closest("[data-save-local]");
@@ -1578,20 +1636,46 @@ function visibleReadyIds() {
   const visible = new Set($$(".lead-check").map(box=>box.value));
   return prospectRows.filter(row=>visible.has(row.id) && ["new","failed","blocked","needs_input","needs_setup","not_found"].includes(row.status)).map(row=>row.id);
 }
+function selectedRouteState() {
+  const value = $("#stateFilter")?.value || "";
+  return STATES.some((item) => item.code === value) ? value : "";
+}
+function renderStateRoute() {
+  const code = selectedRouteState();
+  const registry = STATES.find((item) => item.code === code);
+  const selection = $("#selectedRouteState");
+  const assign = $("#assignStateButton");
+  if (!code || !registry) {
+    selection.textContent = "All-state view";
+    assign.disabled = true;
+    assign.textContent = "Choose a state above to apply it";
+    return;
+  }
+  selection.textContent = registry.name + " selected";
+  assign.disabled = false;
+  assign.textContent = "Apply " + registry.name + " to checked leads";
+  const route = registry.automation === "sunbiz"
+    ? registry.name + " selected: exact-name Sunbiz lookup and its linked public filings are the automatic registry route."
+    : registry.name + " selected: saved website/source links and uploaded public filings are checked. The state registry link is available on every lead; broad registry automation is only enabled where a route exists.";
+  $("#routeDiagnostics").textContent = route;
+}
 function setupResearchControls() {
   const options = STATES.map(s=>'<option value="'+s.code+'">'+s.name+'</option>').join('');
   $('#stateFilter').innerHTML='<option value="">All states</option><option value="unknown">State missing</option>'+options;
-  $('#assignState').innerHTML='<option value="">Choose correct state</option>'+options;
-  $('#stateFilter').addEventListener('change',renderProspects);
+  $('#stateFilter').addEventListener('change',()=>{renderStateRoute();renderProspects()});
   $('#assignStateButton').addEventListener('click',async()=>{
-    const ids=selectedProspectIds(),state=$('#assignState').value;
-    if(!ids.length||!state)return showToast('Select leads and their correct state first.',true);
-    try{await workerRequest('/api/prospects/state',{method:'PUT',body:JSON.stringify({prospect_ids:ids,state})});showToast('State updated. Start crawling the selected state.');}catch(e){showToast(e.message,true)}
+    const ids=selectedProspectIds(),state=selectedRouteState();
+    if(!state)return showToast('Choose the correct state in the lead filter first.',true);
+    if(!ids.length)return showToast('Check the leads that belong to '+state+' first.',true);
+    try{await workerRequest('/api/prospects/state',{method:'PUT',body:JSON.stringify({prospect_ids:ids,state})});showToast('Applied '+state+' to '+ids.length+' selected lead(s). Their registry route now follows the same state.');}catch(e){showToast(e.message,true)}
   });
   $('#filingUpload').addEventListener('change',async event=>{
-    const file=event.target.files?.[0],ids=selectedProspectIds();
+    const file=event.target.files?.[0],ids=selectedProspectIds(),state=selectedRouteState();
     if(!file)return;
+    if(!state){event.target.value='';return showToast('Choose the filing state in the lead filter before uploading a registry PDF.',true)}
     if(ids.length!==1){event.target.value='';return showToast('Select exactly one business for this filing.',true)}
+    const prospect=prospectRows.find(item=>item.id===ids[0]);
+    if(prospect&&stateOf(prospect)!==state){event.target.value='';return showToast('The selected business is not assigned to '+state+'. Apply the selected state first if the import is wrong.',true)}
     if(file.size>10000000){event.target.value='';return showToast('PDF must be under 10 MB.',true)}
     $('#filingMessage').textContent='Reading filing…';
     try{
@@ -1606,6 +1690,7 @@ function setupResearchControls() {
   });
   $('#apiKeys').addEventListener('click',async event=>{const id=event.target.closest('[data-revoke]')?.dataset.revoke;if(!id)return;try{await workerRequest('/api/keys/'+id+'/revoke',{method:'PUT'});await refreshApi()}catch(e){$('#apiMessage').textContent=e.message}});
   $('#grantCredits').addEventListener('click',async()=>{try{const uid=$('#creditUid').value.trim(),credits=Number($('#creditAmount').value);if(!uid||!Number.isInteger(credits)||credits<1)throw Error('Enter an account UID and a positive credit amount.');const data=await workerRequest('/api/admin/accounts/'+encodeURIComponent(uid)+'/credits',{method:'POST',body:JSON.stringify({credits,operation_id:crypto.randomUUID()})});$('#creditMessage').textContent='Account balance: '+data.credits+' credits.'}catch(e){$('#creditMessage').textContent=e.message}});
+  renderStateRoute();
 }
 async function refreshApi(){
   try{const owner=currentUser?.uid;const data=await workerRequest('/api/keys');if(currentUser?.uid!==owner)return;$('#apiUsage').textContent='Available: '+(data.usage.credits||0)+' · Reserved: '+(data.usage.reserved||0)+' · Used: '+(data.usage.used||0)+' · Requests: '+(data.usage.requests||0);$('#apiKeys').innerHTML=data.keys.map(k=>'<p>'+escapeHtml(k.name)+' · '+escapeHtml(k.prefix)+'… '+(k.revoked?'Revoked':'<button class="mini-button" data-revoke="'+escapeHtml(k.id)+'">Revoke</button>')+'</p>').join('')||'No API keys yet.'}catch(e){$('#apiMessage').textContent=e.message}

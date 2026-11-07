@@ -574,6 +574,7 @@ function syncImageConsent() {
   consent.checked = prospect?.imageConsent === true;
   note.value = prospect?.imageConsentNote || "";
   $("#discoverImages").disabled = !prospect;
+  $("#downloadImagesZip").disabled = !prospect || !imageCandidates.length || prospect.imageConsent !== true;
   if (!prospect) {
     imageCandidates = [];
     renderImageCandidates();
@@ -634,10 +635,12 @@ async function discoverImages() {
     const data = await workerRequest('/api/prospects/' + encodeURIComponent(prospect.id) + '/images', { method: 'GET' }, { attempts: 1, timeoutMs: 60000 });
     imageCandidates = Array.isArray(data.candidates) ? data.candidates : [];
     renderImageCandidates();
+    $("#downloadImagesZip").disabled = !imageCandidates.length;
     $("#imageMessage").textContent = imageCandidates.length + " reviewable public image candidate(s) found." + (data.errors?.length ? " Some supplied pages could not be read." : "");
   } catch (error) {
     imageCandidates = [];
     renderImageCandidates();
+    $("#downloadImagesZip").disabled = true;
     $("#imageMessage").textContent = friendlyError(error);
   } finally { button.disabled = false; }
 }
@@ -652,6 +655,42 @@ async function archiveImage(index) {
     $("#imageMessage").textContent = result.message || "Approved image archived.";
     setImageTab("archive");
   } catch (error) { $("#imageMessage").textContent = friendlyError(error); }
+}
+
+async function downloadImagesZip() {
+  const prospect = selectedImageProspect();
+  if (!prospect || !imageCandidates.length || !$("#imageConsent").checked) return showToast("Find images and record consent first.", true);
+  const button = $("#downloadImagesZip");
+  button.disabled = true;
+  $("#imageMessage").textContent = "Creating a JPEG ZIP for this device…";
+  try {
+    const base = getBackendUrl();
+    if (!base || !currentUser) throw new Error("Save the worker endpoint and sign in first.");
+    const token = await currentUser.getIdToken();
+    const response = await resilientFetch(base + "/api/prospects/" + encodeURIComponent(prospect.id) + "/images/zip", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+      body: JSON.stringify({ image_urls: imageCandidates.map((item) => item.imageUrl).slice(0, 12) })
+    }, { attempts: 1, timeoutMs: 180000, context: "image ZIP download" });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.detail || "The image ZIP could not be created.");
+    }
+    const blob = await response.blob();
+    const attachment = response.headers.get("content-disposition") || "";
+    const match = attachment.match(/filename=\"?([^\";]+)\"?/i);
+    const filename = match?.[1] || "vivara-forge-images.zip";
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    $("#imageMessage").textContent = "JPEG ZIP download started. Save it wherever this device stores downloads.";
+  } catch (error) {
+    $("#imageMessage").textContent = friendlyError(error);
+  } finally { button.disabled = !imageCandidates.length; }
 }
 
 function normalizeImportKey(value) {
@@ -1699,6 +1738,7 @@ function initEvents() {
   $("#imageConsent").addEventListener("change", saveImageConsent);
   $("#imageConsentNote").addEventListener("change", saveImageConsent);
   $("#discoverImages").addEventListener("click", discoverImages);
+  $("#downloadImagesZip").addEventListener("click", downloadImagesZip);
   $("#exportLeads").addEventListener("click", exportCSV);
   $("#exportBackup").addEventListener("click", exportBackupJSON);
   $("#showAddForm").addEventListener("click", () => $("#addProspectForm").classList.remove("hidden"));

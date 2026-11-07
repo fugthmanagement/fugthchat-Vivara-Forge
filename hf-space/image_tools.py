@@ -17,7 +17,7 @@ import socket
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
-from urllib.parse import urljoin, urlparse, urldefrag
+from urllib.parse import quote, urljoin, urlparse, urldefrag
 
 import httpx
 from bs4 import BeautifulSoup
@@ -244,6 +244,43 @@ def archive_to_drive(jpeg: bytes, filename: str) -> dict:
         raise
     except Exception:
         raise HTTPException(502, "Drive archive failed. Confirm the Drive API is enabled and the archive folder is shared with the service account.")
+
+
+def archive_to_business_os(jpeg: bytes, prospect: dict, source_url: str, label: str) -> dict | None:
+    """Send an already-approved JPEG to the Management OS private media bridge.
+
+    This is a server-to-server handoff. The key is never sent to the browser and
+    Forge does not receive the Management OS's Drive OAuth tokens.
+    """
+    endpoint = os.getenv("MANAGEMENT_MEDIA_API_URL", "").strip().rstrip("/")
+    key = os.getenv("MANAGEMENT_MEDIA_API_KEY", "").strip()
+    if not endpoint and not key:
+        return None
+    if not endpoint or not key or not endpoint.startswith("https://"):
+        raise HTTPException(503, "Management image archive is incomplete. Configure its URL and shared bridge key together.")
+    try:
+        response = httpx.post(endpoint, content=jpeg, timeout=35, headers={
+            "Content-Type": "image/jpeg",
+            "X-Vivara-Forge-Key": key,
+            "X-Vivara-Forge-Business": quote(str(prospect.get("businessName") or "Business"), safe=""),
+            "X-Vivara-Forge-Label": quote(str(label or "Approved business image"), safe=""),
+            "X-Vivara-Forge-Source-Url": quote(source_url, safe=":/?&=#%"),
+        })
+        if response.status_code >= 400:
+            raise ValueError()
+        result = response.json()
+        if result.get("saved") is not True or not result.get("id"):
+            raise ValueError()
+        return {"id": str(result["id"]), "name": str(result.get("name") or "business-image.jpg"), "mimeType": "image/jpeg", "archive": "management_os", "imageId": str(result.get("imageId") or "")}
+    except Exception:
+        raise HTTPException(502, "Management image archive did not confirm the upload. Check its bridge key and founder Drive connection.")
+
+
+def archive_approved_image(jpeg: bytes, prospect: dict, source_url: str, label: str) -> dict:
+    via_management = archive_to_business_os(jpeg, prospect, source_url, label)
+    if via_management:
+        return via_management
+    return archive_to_drive(jpeg, archive_filename(prospect, source_url))
 
 
 def archive_filename(prospect: dict, source_url: str) -> str:

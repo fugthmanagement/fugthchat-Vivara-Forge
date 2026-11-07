@@ -10,7 +10,8 @@ service cloud.firestore {
           'businessName', 'category', 'city', 'state', 'phone', 'website',
           'sourceUrlsText', 'notes', 'status', 'createdAt', 'updatedAt',
           'manualEmail', 'manualEvidenceText', 'manualSourceUrl', 'lastLookupNote',
-          'emailCandidates', 'businessPhones', 'publicContacts', 'agentTrace'
+          'emailCandidates', 'businessPhones', 'publicContacts', 'agentTrace',
+          'imageConsent', 'imageConsentNote', 'imageConsentUpdatedAt', 'mediaAssetsCount'
         ])
         && data.businessName is string
         && data.businessName.size() > 0
@@ -29,7 +30,11 @@ service cloud.firestore {
         && (!('emailCandidates' in data) || (data.emailCandidates is list && data.emailCandidates.size() <= 40))
         && (!('businessPhones' in data) || (data.businessPhones is list && data.businessPhones.size() <= 40))
         && (!('publicContacts' in data) || (data.publicContacts is list && data.publicContacts.size() <= 20))
-        && (!('agentTrace' in data) || (data.agentTrace is list && data.agentTrace.size() <= 12));
+        && (!('agentTrace' in data) || (data.agentTrace is list && data.agentTrace.size() <= 12))
+        && (!('imageConsent' in data) || data.imageConsent is bool)
+        && (!('imageConsentNote' in data) || (data.imageConsentNote is string && data.imageConsentNote.size() <= 300))
+        && (!('imageConsentUpdatedAt' in data) || data.imageConsentUpdatedAt is timestamp)
+        && (!('mediaAssetsCount' in data) || (data.mediaAssetsCount is int && data.mediaAssetsCount >= 0 && data.mediaAssetsCount <= 500));
     }
 
     match /users/{uid}/prospects/{prospectId} {

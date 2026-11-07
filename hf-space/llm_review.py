@@ -27,7 +27,10 @@ async def review_candidates(business: dict, candidates: list[dict]) -> list[dict
         async with httpx.AsyncClient(timeout=15) as client:
             response = await client.post(GATEWAY_URL + '/v1/chat', headers=headers, json={
                 'task': 'support', 'message': message, 'business_name': str(business.get('businessName',''))[:120],
-                'context': context[:4000], 'model': GATEWAY_MODEL if GATEWAY_MODEL in {'0.5b','1.5b'} else '0.5b',
+                # The gateway owns its model catalog. Forge forwards the selected
+                # identifier unchanged so adding a gateway model never requires a
+                # Forge code release. An empty setting still uses the small default.
+                'context': context[:4000], 'model': GATEWAY_MODEL or '0.5b',
                 'max_tokens': min(256, max(16, len(rows) * 12)), 'temperature': 0.0,
             })
             if response.status_code != 200:
